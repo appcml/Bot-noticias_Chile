@@ -1,23 +1,9 @@
-name: 🤖 Bot Noticias Virales - Scheduler
+name: Bot Noticias Virales - 60min Scheduler
 
 on:
   schedule:
-    # Ejecutar cada 45 minutos
-    - cron: '*/45 * * * *'
-    # Ejecutar cada hora (alternativa más conservadora)
-    # - cron: '0 * * * *'
-  
-  # Permitir ejecución manual desde GitHub
+    - cron: '0 * * * *'
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Entorno de ejecución'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-          - production
-          - testing
 
 env:
   PYTHON_VERSION: '3.11'
@@ -30,75 +16,40 @@ env:
   ESTADO_PATH: data/estado_bot_viral.json
 
 jobs:
-  run-bot:
+  bot-viral:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     
     steps:
-      - name: 📥 Checkout del código
+      - name: Checkout codigo
         uses: actions/checkout@v4
       
-      - name: 🐍 Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
       
-      - name: 📦 Instalar dependencias
+      - name: Instalar dependencias
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests feedparser beautifulsoup4 Pillow
       
-      - name: 📂 Preparar directorio de datos
-        run: |
-          mkdir -p data
-          mkdir -p logs
+      - name: Preparar directorios
+        run: mkdir -p data logs
       
-      - name: 💾 Restaurar historial (cache)
-        uses: actions/cache@v4
+      - name: Restaurar historial
+        uses: actions/cache/restore@v4
         with:
           path: data/
           key: bot-historial-${{ github.run_id }}
-          restore-keys: |
-            bot-historial-
+          restore-keys: bot-historial-
       
-      - name: 🚀 Ejecutar Bot Noticias Virales
-        id: run-bot
-        run: |
-          echo "⏰ Iniciando ejecución: $(date)"
-          python bot_noticias_virales.py
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+      - name: Ejecutar Bot
+        run: python bot_noticias_virales.py
       
-      - name: 💾 Guardar historial para siguiente ejecución
+      - name: Guardar historial
         if: always()
-        uses: actions/cache@v4
+        uses: actions/cache/save@v4
         with:
           path: data/
           key: bot-historial-${{ github.run_id }}-${{ github.run_attempt }}
-      
-      - name: 📤 Subir logs como artefacto (si falla)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-logs-fallidos
-          path: logs/
-          retention-days: 7
-      
-      - name: 📊 Reportar estado
-        if: always()
-        run: |
-          if [ "${{ steps.run-bot.outputs.exit_code }}" == "0" ]; then
-            echo "✅ Bot ejecutado exitosamente"
-          else
-            echo "❌ Bot falló con código: ${{ steps.run-bot.outputs.exit_code }}"
-          fi
-
-  notify:
-    needs: run-bot
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: 📧 Notificar resultado (opcional - requiere configuración)
-        run: |
-          echo "Estado de la ejecución: ${{ needs.run-bot.result }}"
-          # Aquí puedes agregar integración con Slack, Discord, Email, etc.
