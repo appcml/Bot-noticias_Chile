@@ -1,0 +1,104 @@
+name: 🤖 Bot Noticias Virales - Scheduler
+
+on:
+  schedule:
+    # Ejecutar cada 45 minutos
+    - cron: '*/45 * * * *'
+    # Ejecutar cada hora (alternativa más conservadora)
+    # - cron: '0 * * * *'
+  
+  # Permitir ejecución manual desde GitHub
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Entorno de ejecución'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - testing
+
+env:
+  PYTHON_VERSION: '3.11'
+  FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+  FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+  NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+  NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
+  GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
+  HISTORIAL_PATH: data/historial_viral.json
+  ESTADO_PATH: data/estado_bot_viral.json
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout del código
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 📂 Preparar directorio de datos
+        run: |
+          mkdir -p data
+          mkdir -p logs
+      
+      - name: 💾 Restaurar historial (cache)
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: bot-historial-${{ github.run_id }}
+          restore-keys: |
+            bot-historial-
+      
+      - name: 🚀 Ejecutar Bot Noticias Virales
+        id: run-bot
+        run: |
+          echo "⏰ Iniciando ejecución: $(date)"
+          python bot_noticias_virales.py
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+      
+      - name: 💾 Guardar historial para siguiente ejecución
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: bot-historial-${{ github.run_id }}-${{ github.run_attempt }}
+      
+      - name: 📤 Subir logs como artefacto (si falla)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs-fallidos
+          path: logs/
+          retention-days: 7
+      
+      - name: 📊 Reportar estado
+        if: always()
+        run: |
+          if [ "${{ steps.run-bot.outputs.exit_code }}" == "0" ]; then
+            echo "✅ Bot ejecutado exitosamente"
+          else
+            echo "❌ Bot falló con código: ${{ steps.run-bot.outputs.exit_code }}"
+          fi
+
+  notify:
+    needs: run-bot
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📧 Notificar resultado (opcional - requiere configuración)
+        run: |
+          echo "Estado de la ejecución: ${{ needs.run-bot.result }}"
+          # Aquí puedes agregar integración con Slack, Discord, Email, etc.
