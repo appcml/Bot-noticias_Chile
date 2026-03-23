@@ -97,20 +97,20 @@ PAISES_LATAM = {
 
 # Hashtags por categoría/tema
 HASHTAGS_CATEGORIA = {
-    'politica': ['#Política', #PolíticaLATAM', '#Gobierno', '#Elecciones'],
-    'economia': ['#Economía', #EconomíaLATAM', '#Finanzas', '#Mercados', '#Inflación'],
-    'internacional': ['#Internacional', #Mundo', '#Global', '#Diplomacia'],
-    'tecnologia': ['#Tecnología', #Tech', '#Innovación', '#Digital', '#IA', '#Ciberseguridad'],
-    'migracion': ['#Migración', #Migrantes', '#Frontera', '#Asilo', '#Refugiados'],
-    'narcotrafico': ['#Narco', #Cárteles', '#Seguridad', #CrimenOrganizado', '#Drogas'],
-    'guerra': ['#Guerra', #Conflicto', '#Militar', '#Defensa', '#Geopolítica'],
-    'conflicto': ['#Conflicto', #Crisis', '#Violencia', '#Protestas', '#Manifestaciones'],
-    'ciencia': ['#Ciencia', #Investigación', #Descubrimiento', '#Salud', '#Medicina'],
-    'corrupcion': ['#Corrupción', #Impunidad', '#Transparencia', '#Justicia'],
-    'escandalo': ['#Escándalo', #Polemica', '#Controversia'],
-    'deporte': ['#Deportes', #Fútbol', '#DeporteLATAM'],
-    'urgente': ['#Urgente', #ÚltimaHora', '#Alerta', '#Breaking'],
-    'default': ['#NoticiasVirales', #LATAM', '#Actualidad']
+    'politica': ['#Política', '#PolíticaLATAM', '#Gobierno', '#Elecciones'],
+    'economia': ['#Economía', '#EconomíaLATAM', '#Finanzas', '#Mercados', '#Inflación'],
+    'internacional': ['#Internacional', '#Mundo', '#Global', '#Diplomacia'],
+    'tecnologia': ['#Tecnología', '#Tech', '#Innovación', '#Digital', '#IA', '#Ciberseguridad'],
+    'migracion': ['#Migración', '#Migrantes', '#Frontera', '#Asilo', '#Refugiados'],
+    'narcotrafico': ['#Narco', '#Cárteles', '#Seguridad', '#CrimenOrganizado', '#Drogas'],
+    'guerra': ['#Guerra', '#Conflicto', '#Militar', '#Defensa', '#Geopolítica'],
+    'conflicto': ['#Conflicto', '#Crisis', '#Violencia', '#Protestas', '#Manifestaciones'],
+    'ciencia': ['#Ciencia', '#Investigación', '#Descubrimiento', '#Salud', '#Medicina'],
+    'corrupcion': ['#Corrupción', '#Impunidad', '#Transparencia', '#Justicia'],
+    'escandalo': ['#Escándalo', '#Polemica', '#Controversia'],
+    'deporte': ['#Deportes', '#Fútbol', '#DeporteLATAM'],
+    'urgente': ['#Urgente', '#ÚltimaHora', '#Alerta', '#Breaking'],
+    'default': ['#NoticiasVirales', '#LATAM', '#Actualidad']
 }
 
 # Palabras clave por categoría para detección
