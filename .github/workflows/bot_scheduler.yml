@@ -75,8 +75,20 @@ jobs:
       - name: Ejecutar bot
         id: bot
         run: |
+          set -o pipefail
           python main.py 2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          BOT_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$BOT_EXIT" >> $GITHUB_OUTPUT
+          # exit 0 = publicó OK
+          # exit 1 = sin noticias nuevas o tiempo de espera (normal, no es error)
+          # exit 2+ = error real
+          if [ "$BOT_EXIT" -ge 2 ]; then
+            echo "status=error" >> $GITHUB_OUTPUT
+          elif [ "$BOT_EXIT" -eq 1 ]; then
+            echo "status=sin_noticias" >> $GITHUB_OUTPUT
+          else
+            echo "status=ok" >> $GITHUB_OUTPUT
+          fi
 
       # ── 7. Guardar historial siempre (éxito o fallo) ───────
       - name: Guardar historial
@@ -95,13 +107,19 @@ jobs:
           path: logs/
           retention-days: 7
 
-      # ── 9. Notificar si el bot falla ───────────────────────
+      # ── 9. Verificar resultado ─────────────────────────────
+      # Solo falla el workflow si hay un error REAL (exit >= 2)
+      # exit 1 = sin noticias nuevas es comportamiento normal
       - name: Verificar resultado
         if: always()
         run: |
-          if [ "${{ steps.bot.outputs.exit_code }}" != "0" ]; then
-            echo "⚠️ El bot terminó con error. Revisar logs del artefacto."
-            exit 1
+          STATUS="${{ steps.bot.outputs.status }}"
+          EXIT="${{ steps.bot.outputs.exit_code }}"
+          if [ "$STATUS" = "ok" ]; then
+            echo "✅ Noticia publicada correctamente."
+          elif [ "$STATUS" = "sin_noticias" ]; then
+            echo "ℹ️ Sin noticias nuevas disponibles (exit $EXIT) — comportamiento normal."
           else
-            echo "✅ Bot ejecutado correctamente."
+            echo "❌ Error real en el bot (exit $EXIT). Revisar logs del artefacto."
+            exit 1
           fi
