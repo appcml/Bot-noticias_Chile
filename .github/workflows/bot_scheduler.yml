@@ -30,8 +30,8 @@ env:
   NEWSDATA_API_KEY:  ${{ secrets.NEWSDATA_API_KEY }}
   GNEWS_API_KEY:     ${{ secrets.GNEWS_API_KEY }}
   # Rutas de datos — actualizadas al nuevo nombre
-  HISTORIAL_PATH:    data/historial_chile.json
-  ESTADO_PATH:       data/estado_bot_chile.json
+  HISTORIAL_PATH:    data/historial_viral.json
+  ESTADO_PATH:       data/estado_bot_viral.json
 
 jobs:
   bot-chile:
@@ -76,7 +76,7 @@ jobs:
         id: bot
         run: |
           set -o pipefail
-          python main.py 2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
+          python bot_noticias_virales.py 2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
           BOT_EXIT=${PIPESTATUS[0]}
           echo "exit_code=$BOT_EXIT" >> $GITHUB_OUTPUT
           # exit 0 = publicó OK
