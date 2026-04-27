@@ -1496,10 +1496,10 @@ def main():
 
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
         log("Faltan credenciales Facebook (FB_PAGE_ID / FB_ACCESS_TOKEN)", 'error')
-        return False
+        return False   # error real → exit 2
 
     if not verificar_tiempo():
-        return True
+        return None    # tiempo de espera → exit 1 (normal)
 
     historial = cargar_historial()
     log(f"Historial: {len(historial.get('urls', []))} URLs publicadas", 'info')
@@ -1530,8 +1530,8 @@ def main():
         noticias.extend(obtener_gnews_chile())
 
     if not noticias:
-        log("No se encontraron noticias", 'error')
-        return False
+        log("No se encontraron noticias", 'advertencia')
+        return None    # sin noticias → exit 1 (normal)
 
     log(f"Total noticias recolectadas: {len(noticias)}", 'info')
 
@@ -1553,7 +1553,7 @@ def main():
 
     if not noticias_unicas:
         log("Todas las noticias ya fueron publicadas", 'advertencia')
-        return False
+        return None    # normal → exit 1
 
     # ── Separar por imagen / sin imagen ──────────────────────
     con_imagen    = [n for n in noticias_unicas if n.get('tiene_imagen')]
@@ -1582,7 +1582,7 @@ def main():
     imagen_path, tipo_imagen = procesar_imagen(seleccionada)
     if not imagen_path:
         log("No se pudo crear imagen, abortando", 'error')
-        return False
+        return False   # error real → exit 2
     log(f"Tipo imagen: {tipo_imagen}", 'imagen')
 
     # ── Obtener texto completo (scraping + fallback RSS) ──────
@@ -1633,15 +1633,24 @@ def main():
         return True
     else:
         log("PUBLICACIÓN FALLIDA", 'error')
-        return False
+        return False   # error real → exit 2
 
 
 if __name__ == "__main__":
+    # Códigos de salida:
+    #   0 = publicación exitosa
+    #   1 = sin noticias nuevas / tiempo de espera (normal, no es error)
+    #   2 = error real (credenciales, imagen, Facebook API, excepción)
     try:
-        success = main()
-        exit(0 if success else 1)
+        resultado = main()
+        if resultado is True:
+            exit(0)   # publicó OK
+        elif resultado is None:
+            exit(1)   # sin noticias / tiempo de espera
+        else:
+            exit(2)   # error real
     except Exception as e:
         log(f"Error crítico: {e}", 'error')
         import traceback
         traceback.print_exc()
-        exit(1)
+        exit(2)
