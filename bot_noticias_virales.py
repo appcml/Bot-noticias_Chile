@@ -643,6 +643,17 @@ def extraer_texto_articulo(url, desc_fallback='', timeout=8):
             try:
                 el = soup.select_one(selector)
                 if el:
+                    # Extraer párrafos del elemento encontrado
+                    parrafos_el = el.find_all('p')
+                    if parrafos_el:
+                        bloques = [p.get_text(strip=True) for p in parrafos_el
+                                   if len(p.get_text(strip=True)) > 40]
+                        if bloques:
+                            candidato = '\n\n'.join(bloques)
+                            if len(candidato) > len(texto) and len(candidato) > 200:
+                                texto = candidato
+                                break
+                    # Si no tiene párrafos internos, texto plano
                     candidato = el.get_text(separator=' ', strip=True)
                     candidato = re.sub(r'\s+', ' ', candidato).strip()
                     if len(candidato) > len(texto) and len(candidato) > 200:
@@ -657,12 +668,15 @@ def extraer_texto_articulo(url, desc_fallback='', timeout=8):
             bloques = []
             for p in parrafos:
                 t = p.get_text(strip=True)
-                if len(t) > 60:           # párrafos con sustancia real
+                if len(t) > 60:
                     bloques.append(t)
             if bloques:
-                texto = ' '.join(bloques)
+                texto = '\n\n'.join(bloques)   # ← párrafos separados, no espacio
 
-        texto = re.sub(r'\s+', ' ', texto).strip()
+        # Limpiar espacios extra pero preservar saltos de párrafo
+        texto = re.sub(r'[ \t]+', ' ', texto)          # espacios múltiples → uno
+        texto = re.sub(r'\n{3,}', '\n\n', texto)       # más de 2 saltos → 2
+        texto = texto.strip()
 
         if len(texto) > 300:
             log(f"Scraping OK: {len(texto)} chars desde {dominio}", 'exito')
@@ -676,17 +690,59 @@ def extraer_texto_articulo(url, desc_fallback='', timeout=8):
         return desc_fallback
 
 
-def obtener_descripcion_completa(noticia, max_chars=1800):
+def formatear_parrafos(texto, max_chars=1400):
+    """
+    Formatea el texto para Facebook:
+    - Separa oraciones largas en párrafos visuales
+    - Preserva saltos de línea existentes
+    - Trunca respetando el final de una oración completa
+    """
+    if not texto:
+        return ''
+
+    # Si ya tiene párrafos (del scraping), limpiar y respetar
+    if '\n\n' in texto:
+        parrafos = [p.strip() for p in texto.split('\n\n') if p.strip()]
+    else:
+        # Texto plano: dividir en oraciones y agrupar de 2 en 2
+        oraciones = re.split(r'(?<=[.!?])\s+', texto.strip())
+        oraciones = [o.strip() for o in oraciones if len(o.strip()) > 20]
+        # Agrupar de 2 oraciones por párrafo
+        parrafos = []
+        for i in range(0, len(oraciones), 2):
+            bloque = ' '.join(oraciones[i:i+2])
+            if bloque:
+                parrafos.append(bloque)
+
+    # Unir con doble salto de línea
+    resultado = '\n\n'.join(parrafos)
+
+    # Truncar respetando párrafos completos
+    if len(resultado) <= max_chars:
+        return resultado
+
+    # Cortar en el último \n\n antes del límite
+    truncado = resultado[:max_chars]
+    ultimo_parrafo = truncado.rfind('\n\n')
+    ultimo_punto   = max(truncado.rfind('. '), truncado.rfind('.\n'))
+
+    if ultimo_parrafo > max_chars * 0.5:
+        return truncado[:ultimo_parrafo].rstrip()
+    elif ultimo_punto > max_chars * 0.5:
+        return truncado[:ultimo_punto + 1].rstrip()
+    return truncado.rstrip() + '…'
+
+
+def obtener_descripcion_completa(noticia, max_chars=1400):
     """
     Orquesta la obtención del texto completo:
     1. Intenta scraping del artículo original
     2. Si falla o es muy corto, usa la descripción del RSS
-    3. Aplica límite de caracteres respetando oraciones completas
+    3. Formatea en párrafos visuales para Facebook
     """
-    url   = noticia.get('url', '')
-    desc  = noticia.get('descripcion', '')
+    url  = noticia.get('url', '')
+    desc = noticia.get('descripcion', '')
 
-    # Si la descripción del RSS ya es larga (>600 chars), usarla directamente
     if len(desc) > 600:
         texto = desc
         log(f"Descripción RSS suficiente: {len(desc)} chars", 'info')
@@ -694,19 +750,7 @@ def obtener_descripcion_completa(noticia, max_chars=1800):
         log(f"Intentando scraping completo de: {url[:70]}", 'info')
         texto = extraer_texto_articulo(url, desc_fallback=desc)
 
-    # Truncar respetando oraciones completas
-    if len(texto) <= max_chars:
-        return texto
-
-    # Cortar en el último punto antes de max_chars
-    truncado = texto[:max_chars]
-    ultimo_punto = max(
-        truncado.rfind('. '),
-        truncado.rfind('.\n'),
-    )
-    if ultimo_punto > max_chars * 0.6:   # al menos 60% del límite
-        return truncado[:ultimo_punto + 1]
-    return truncado.rstrip() + '…'
+    return formatear_parrafos(texto, max_chars=max_chars)
 
 
 def detectar_categoria(titulo, descripcion):
