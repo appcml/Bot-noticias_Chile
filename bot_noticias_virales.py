@@ -537,6 +537,178 @@ def limpiar_texto(texto):
     t = re.sub(r'https?://\S*', '', t)
     return t.strip()
 
+# ═══════════════════════════════════════════════════════════════
+# SCRAPING DE ARTÍCULO COMPLETO
+# ═══════════════════════════════════════════════════════════════
+
+# Selectores CSS de contenido principal por dominio
+SELECTORES_ARTICULO = {
+    'emol.com':          ['div.col-xs-12.texto', 'div#cuDetalle', 'section.body-noticia'],
+    'latercera.com':     ['div.article-content', 'div.content-text', 'section.article__body'],
+    'biobiochile.cl':    ['div.entry-content', 'article.post-content', 'div.article-body'],
+    'cooperativa.cl':    ['div.noticia-texto', 'div.story-body', 'article'],
+    'cnnchile.com':      ['div.article__body', 'div.content-article', 'section.body'],
+    't13.cl':            ['div.article-body', 'div.nota-cuerpo', 'section.content'],
+    '24horas.cl':        ['div.article-body', 'div.content-nota', 'article'],
+    'meganoticias.cl':   ['div.article-content', 'div.body-nota', 'article'],
+    'df.cl':             ['div.article-body', 'div.nota-body', 'section.content'],
+    'elmostrador.cl':    ['div.entry-content', 'article.post', 'div.content'],
+    'eldinamo.cl':       ['div.entry-content', 'article', 'div.post-content'],
+    'eldesconcierto.cl': ['div.entry-content', 'div.article-body', 'article'],
+    'publimetro.cl':     ['div.article__body', 'div.content-body', 'article'],
+    'lacuarta.com':      ['div.entry-content', 'div.article-body', 'article'],
+    'lun.com':           ['div.article-body', 'div.nota-texto', 'article'],
+    'soychile.cl':       ['div.article-body', 'div.content', 'article'],
+    'adnradio.cl':       ['div.article-content', 'div.entry-content', 'article'],
+}
+
+# Selectores genéricos (fallback para medios no mapeados)
+SELECTORES_GENERICOS = [
+    'article',
+    'div[class*="article-body"]',
+    'div[class*="article-content"]',
+    'div[class*="entry-content"]',
+    'div[class*="nota-cuerpo"]',
+    'div[class*="story-body"]',
+    'div[class*="post-content"]',
+    'div[class*="content-text"]',
+    'div[class*="body-nota"]',
+    'main',
+]
+
+# Elementos a eliminar del DOM antes de extraer texto
+TAGS_BASURA = [
+    'script', 'style', 'nav', 'header', 'footer', 'aside',
+    'figure', 'figcaption', 'iframe', 'form', 'button',
+    'noscript', 'advertisement', 'div[class*="publicidad"]',
+    'div[class*="ads"]', 'div[class*="related"]',
+    'div[class*="recomendado"]', 'div[class*="social"]',
+    'div[class*="comentario"]', 'div[class*="tag"]',
+]
+
+def extraer_texto_articulo(url, desc_fallback='', timeout=8):
+    """
+    Intenta extraer el texto completo del artículo desde la URL.
+    Retorna el texto limpio o desc_fallback si falla.
+    Estrategia: BeautifulSoup con selectores específicos por medio,
+    luego selectores genéricos, luego heurística de densidad de texto.
+    """
+    if not url:
+        return desc_fallback
+
+    try:
+        from urllib.parse import urlparse as _up
+        dominio = _up(url).netloc.lower()
+        dominio = re.sub(r'^(www\.|m\.)', '', dominio)
+
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+            'Accept-Language': 'es-CL,es;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        }
+
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code != 200:
+            log(f"Scraping HTTP {r.status_code}: {url[:60]}", 'advertencia')
+            return desc_fallback
+
+        # Necesitamos BeautifulSoup
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            log("BeautifulSoup no disponible — usando fallback", 'advertencia')
+            return desc_fallback
+
+        soup = BeautifulSoup(r.content, 'html.parser')
+
+        # Eliminar basura
+        for tag in soup(['script', 'style', 'nav', 'header', 'footer',
+                         'aside', 'figure', 'figcaption', 'iframe',
+                         'form', 'button', 'noscript']):
+            tag.decompose()
+        for clase in ['publicidad', 'ads', 'related', 'recomendado',
+                      'social-share', 'comentario', 'tags', 'newsletter']:
+            for el in soup.find_all(class_=re.compile(clase, re.I)):
+                el.decompose()
+
+        # ── Intentar selectores específicos del medio ─────────
+        texto = ''
+        selectores = SELECTORES_ARTICULO.get(dominio, []) + SELECTORES_GENERICOS
+
+        for selector in selectores:
+            try:
+                el = soup.select_one(selector)
+                if el:
+                    candidato = el.get_text(separator=' ', strip=True)
+                    candidato = re.sub(r'\s+', ' ', candidato).strip()
+                    if len(candidato) > len(texto) and len(candidato) > 200:
+                        texto = candidato
+                        break
+            except Exception:
+                continue
+
+        # ── Heurística de densidad si ningún selector funcionó ─
+        if len(texto) < 200:
+            parrafos = soup.find_all('p')
+            bloques = []
+            for p in parrafos:
+                t = p.get_text(strip=True)
+                if len(t) > 60:           # párrafos con sustancia real
+                    bloques.append(t)
+            if bloques:
+                texto = ' '.join(bloques)
+
+        texto = re.sub(r'\s+', ' ', texto).strip()
+
+        if len(texto) > 300:
+            log(f"Scraping OK: {len(texto)} chars desde {dominio}", 'exito')
+            return texto
+        else:
+            log(f"Scraping insuficiente ({len(texto)} chars), usando fallback", 'advertencia')
+            return desc_fallback if desc_fallback else texto
+
+    except Exception as e:
+        log(f"Error scraping {url[:60]}: {e}", 'error')
+        return desc_fallback
+
+
+def obtener_descripcion_completa(noticia, max_chars=1800):
+    """
+    Orquesta la obtención del texto completo:
+    1. Intenta scraping del artículo original
+    2. Si falla o es muy corto, usa la descripción del RSS
+    3. Aplica límite de caracteres respetando oraciones completas
+    """
+    url   = noticia.get('url', '')
+    desc  = noticia.get('descripcion', '')
+
+    # Si la descripción del RSS ya es larga (>600 chars), usarla directamente
+    if len(desc) > 600:
+        texto = desc
+        log(f"Descripción RSS suficiente: {len(desc)} chars", 'info')
+    else:
+        log(f"Intentando scraping completo de: {url[:70]}", 'info')
+        texto = extraer_texto_articulo(url, desc_fallback=desc)
+
+    # Truncar respetando oraciones completas
+    if len(texto) <= max_chars:
+        return texto
+
+    # Cortar en el último punto antes de max_chars
+    truncado = texto[:max_chars]
+    ultimo_punto = max(
+        truncado.rfind('. '),
+        truncado.rfind('.\n'),
+    )
+    if ultimo_punto > max_chars * 0.6:   # al menos 60% del límite
+        return truncado[:ultimo_punto + 1]
+    return truncado.rstrip() + '…'
+
+
 def detectar_categoria(titulo, descripcion):
     texto = f"{titulo} {descripcion}".lower()
     puntajes = {cat: sum(1 for kw in kws if kw in texto)
@@ -1239,12 +1411,15 @@ def publicar_facebook(titulo, descripcion, imagen_path, hashtags, cta, fuente=''
     # Línea de verificación de fuente
     linea_fuente = formatear_fuente_verificacion(fuente, url)
 
-    # Construir mensaje con CTA poderoso
-    desc_corta = descripcion[:260] + '…' if len(descripcion) > 260 else descripcion
+    # descripcion ya viene procesada por obtener_descripcion_completa()
+    # Solo ajustamos si el mensaje total excede el límite de Facebook (63.206 chars,
+    # pero para posts de foto el límite práctico es ~2.200)
+    MAX_DESC_POST = 1400
+    desc_post = descripcion if len(descripcion) <= MAX_DESC_POST else descripcion[:MAX_DESC_POST].rstrip() + '…'
 
     mensaje = (
         f"🔴 {titulo}\n\n"
-        f"{desc_corta}\n\n"
+        f"{desc_post}\n\n"
         f"{'─' * 30}\n"
         f"{linea_fuente}\n"
         f"{'─' * 30}\n"
@@ -1410,6 +1585,11 @@ def main():
         return False
     log(f"Tipo imagen: {tipo_imagen}", 'imagen')
 
+    # ── Obtener texto completo (scraping + fallback RSS) ──────
+    log("Obteniendo texto completo del artículo...", 'info')
+    descripcion_completa = obtener_descripcion_completa(seleccionada, max_chars=1400)
+    log(f"Texto final: {len(descripcion_completa)} chars", 'info')
+
     # ── Preparar contenido ────────────────────────────────────
     hashtags = generar_hashtags(
         seleccionada['titulo'],
@@ -1424,7 +1604,7 @@ def main():
     # ── Publicar ──────────────────────────────────────────────
     exito = publicar_facebook(
         titulo      = seleccionada['titulo'],
-        descripcion = seleccionada.get('descripcion', ''),
+        descripcion = descripcion_completa,
         imagen_path = imagen_path,
         hashtags    = hashtags,
         cta         = cta,
