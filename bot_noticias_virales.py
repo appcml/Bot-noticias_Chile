@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BOT NOTICIAS VIRALES LATAM 24/7 - V5.0 COMPLETO
-Distribución geográfica: 50% Sudamérica, 30% Norteamérica, 20% Centroamérica/Caribe
-Hashtags automáticos por tema y ubicación
+VERDAD HOY — NOTICIAS CHILE 24/7 - V6.0
+Foco 100% Chile: noticias nacionales + internacionales relacionadas con Chile
+Prioriza noticias con imagen | CTA poderoso | Publica cada 30 minutos
 """
 
 import requests
@@ -23,155 +23,447 @@ from PIL import Image, ImageDraw, ImageFont
 # CONFIGURACIÓN
 # ═══════════════════════════════════════════════════════════════
 
-NEWS_API_KEY = os.getenv('NEWS_API_KEY')
-NEWSDATA_API_KEY = os.getenv('NEWSDATA_API_KEY')
-GNEWS_API_KEY = os.getenv('GNEWS_API_KEY')
-FB_PAGE_ID = os.getenv('FB_PAGE_ID')
-FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
+NEWS_API_KEY      = os.getenv('NEWS_API_KEY')
+NEWSDATA_API_KEY  = os.getenv('NEWSDATA_API_KEY')
+GNEWS_API_KEY     = os.getenv('GNEWS_API_KEY')
+FB_PAGE_ID        = os.getenv('FB_PAGE_ID')
+FB_ACCESS_TOKEN   = os.getenv('FB_ACCESS_TOKEN')
 
-HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_viral.json')
-ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot_viral.json')
+HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_chile.json')
+ESTADO_PATH    = os.getenv('ESTADO_PATH',    'data/estado_bot_chile.json')
 
-TIEMPO_ENTRE_PUBLICACIONES = 55
-MAX_TITULOS_HISTORIA = 300
-UMBRAL_SIMILITUD_TITULO = 0.85
-UMBRAL_SIMILITUD_CONTENIDO = 0.75
+TIEMPO_ENTRE_PUBLICACIONES = 28          # minutos (un poco menos de 30 para margen)
+MAX_TITULOS_HISTORIA       = 500
+UMBRAL_SIMILITUD_TITULO    = 0.82
+BONUS_IMAGEN               = 30          # puntaje extra por tener imagen
+BONUS_CHILE_DIRECTO        = 25          # puntaje extra noticia 100% Chile
+BONUS_FUENTE_CL            = 15          # puntaje extra fuente .cl
+
+# ═══════════════════════════════════════════════════════════════
+# KEYWORDS CHILE — filtro geográfico
+# ═══════════════════════════════════════════════════════════════
+
+# Palabras que identifican una noticia como de Chile o relacionada
+KEYWORDS_CHILE_PRIMARIAS = [
+    'chile', 'chileno', 'chilena', 'chilenos', 'chilenas',
+    'santiago', 'valparaíso', 'concepción', 'antofagasta', 'viña del mar',
+    'temuco', 'rancagua', 'iquique', 'arica', 'coquimbo', 'la serena',
+    'talca', 'chillán', 'puerto montt', 'osorno', 'copiapó', 'punta arenas',
+    'calama', 'tocopilla', 'ovalle', 'quillota', 'san antonio', 'curicó',
+    'los ángeles', 'valdivia', 'puerto natales', 'puerto varas',
+]
+
+KEYWORDS_CHILE_SECUNDARIAS = [
+    'boric', 'gobierno chileno', 'gobierno de chile', 'congreso nacional',
+    'carabineros', 'pdi', 'fiscalía', 'minsal', 'seremi', 'municipalidad',
+    'peso chileno', 'banco central de chile', 'economía chilena',
+    'constitución chilena', 'senado chile', 'diputados chile', 'senadores chilenos',
+    'tribunal constitucional', 'corte suprema chile', 'ministerio',
+    'atacama', 'araucanía', 'magallanes', 'aysén', 'tarapacá', 'biobío',
+    'maule', 'ñuble', "o'higgins", 'los ríos', 'los lagos', 'patagonia chilena',
+    'atacameño', 'mapuche', 'rapanui', 'aymara chileno',
+    'litio chile', 'cobre chile', 'minería chilena', 'pesca chilena',
+    'vino chileno', 'salmón chileno', 'fruta chilena',
+    'isapre', 'fonasa', 'afp chilena', 'sii chile', 'serviu',
+    'falabella chile', 'cencosud', 'latam airlines', 'codelco', 'enap',
+]
+
+# Palabras que indican que una noticia internacional afecta a Chile
+KEYWORDS_CHILE_INTERNACIONAL = [
+    'chile en', 'chile ante', 'chile y', 'para chile', 'hacia chile',
+    'afecta a chile', 'impacto en chile', 'consecuencias en chile',
+    'acuerdo con chile', 'tratado con chile', 'relaciones con chile',
+    'cancillería', 'embajada de chile', 'embajador chileno',
+    'delegación chilena', 'selección chilena', 'la roja',
+    'copa chile', 'chileno en el exterior', 'chilenos en',
+]
+
+def es_noticia_chile(titulo, descripcion, fuente=''):
+    """
+    Retorna (True, nivel) si la noticia es de Chile o relacionada.
+    nivel: 'directo' = 100% Chile | 'relacionado' = Chile mencionado
+    """
+    texto = f"{titulo} {descripcion} {fuente}".lower()
+
+    # Nivel 1: Chile mencionado directamente (nombres clave)
+    for kw in KEYWORDS_CHILE_PRIMARIAS:
+        if kw in texto:
+            return True, 'directo'
+
+    # Nivel 2: Instituciones, personajes o términos chilenos
+    for kw in KEYWORDS_CHILE_SECUNDARIAS:
+        if kw in texto:
+            return True, 'directo'
+
+    # Nivel 3: Noticia internacional que afecta/menciona Chile
+    for kw in KEYWORDS_CHILE_INTERNACIONAL:
+        if kw in texto:
+            return True, 'relacionado'
+
+    return False, None
+
+
+# ═══════════════════════════════════════════════════════════════
+# REGIONES Y HASHTAGS CHILE
+# ═══════════════════════════════════════════════════════════════
+
+REGIONES_CHILE = {
+    'santiago': '#Santiago', 'región metropolitana': '#Santiago', 'rm ': '#Santiago',
+    'valparaíso': '#Valparaíso', 'viña del mar': '#Valparaíso', 'quillota': '#Valparaíso',
+    'concepción': '#Biobío', 'biobío': '#Biobío', 'biobio': '#Biobío', 'los ángeles': '#Biobío',
+    'antofagasta': '#Antofagasta', 'calama': '#Antofagasta', 'tocopilla': '#Antofagasta',
+    'iquique': '#Tarapacá', 'alto hospicio': '#Tarapacá',
+    'arica': '#AricaParinacota',
+    'la serena': '#Coquimbo', 'coquimbo': '#Coquimbo', 'ovalle': '#Coquimbo',
+    'copiapó': '#Atacama',
+    'rancagua': '#OHiggins',
+    'talca': '#Maule', 'curicó': '#Maule',
+    'chillán': '#Ñuble',
+    'temuco': '#Araucanía', 'araucanía': '#Araucanía',
+    'valdivia': '#LosRíos',
+    'puerto montt': '#LosLagos', 'osorno': '#LosLagos', 'puerto varas': '#LosLagos',
+    'coyhaique': '#Aysén',
+    'punta arenas': '#Magallanes', 'puerto natales': '#Magallanes',
+}
+
+HASHTAGS_CATEGORIA = {
+    'politica':      ['#PolíticaChile', '#GobiernoChile'],
+    'economia':      ['#EconomíaChile', '#FinanzasChile'],
+    'seguridad':     ['#SeguridadChile', '#DelincuenciaChile'],
+    'policial':      ['#PolicialChile', '#CriminalidadChile'],
+    'social':        ['#ChileSocial', '#ViviendaChile'],
+    'educacion':     ['#EducaciónChile', '#UniversidadesChile'],
+    'internacional': ['#ChileEnElMundo', '#Internacional'],
+    'tecnologia':    ['#TecnologíaChile', '#InnovaciónChile'],
+    'deporte':       ['#DeporteChile', '#FútbolChile'],
+    'ciencia':       ['#CienciaChile', '#SaludChile'],
+    'medioambiente': ['#MedioambienteChile', '#CambioClimático'],
+    'cultura':       ['#CulturaChile', '#EntretenimientoChile'],
+    'conflicto':     ['#ConflictoChile', '#ProtestasChile'],
+    'corrupcion':    ['#CorrupciónChile', '#TransparenciaChile'],
+    'escandalo':     ['#EscándaloChile', '#PolémicaChile'],
+    'default':       ['#NoticiasChile', '#Chile'],
+}
 
 COLORES_BACKUP = {
-    'urgente': (220, 20, 60),
-    'negativa': (139, 0, 0),
-    'positiva': (34, 139, 34),
-    'neutral': (25, 25, 112),
-    'deporte': (255, 140, 0),
-    'politica': (75, 0, 130),
-    'economia': (0, 100, 0),
-    'tecnologia': (0, 128, 128),
-    'migracion': (128, 0, 128),
-    'conflicto': (178, 34, 34),
-    'ciencia': (70, 130, 180),
-    'corrupcion': (139, 69, 19)
+    'urgente':       (180, 0,   30),
+    'negativa':      (120, 0,   0),
+    'positiva':      (0,   100, 60),
+    'neutral':       (20,  40,  90),
+    'deporte':       (200, 100, 0),
+    'politica':      (60,  0,   100),
+    'economia':      (0,   80,  40),
+    'tecnologia':    (0,   100, 110),
+    'policial':      (40,  40,  40),
+    'seguridad':     (120, 20,  20),   # rojo oscuro — urgencia ciudadana
+    'social':        (0,   80,  120),  # azul — bienestar
+    'educacion':     (20,  80,  160),  # azul medio — institucional
+    'conflicto':     (150, 20,  20),
+    'ciencia':       (40,  100, 160),
+    'corrupcion':    (100, 50,  10),
+    'medioambiente': (0,   120, 60),
+    'cultura':       (100, 0,   80),
 }
 
 # ═══════════════════════════════════════════════════════════════
-# DICCIONARIOS DE HASHTAGS Y UBICACIONES
+# PALABRAS CLAVE POR CATEGORÍA
 # ═══════════════════════════════════════════════════════════════
 
-# Mapeo de países para hashtags de ubicación
-PAISES_LATAM = {
-    # Sudamérica (50%)
-    'argentina': '#Argentina', 'buenos aires': '#Argentina',
-    'chile': '#Chile', 'santiago': '#Chile', 'valparaíso': '#Chile',
-    'brasil': '#Brasil', 'sao paulo': '#Brasil', 'rio de janeiro': '#Brasil', 'brasilia': '#Brasil',
-    'colombia': '#Colombia', 'bogotá': '#Colombia', 'medellín': '#Colombia', 'cali': '#Colombia',
-    'perú': '#Perú', 'peru': '#Perú', 'lima': '#Perú',
-    'venezuela': '#Venezuela', 'caracas': '#Venezuela',
-    'ecuador': '#Ecuador', 'quito': '#Ecuador', 'guayaquil': '#Ecuador',
-    'bolivia': '#Bolivia', 'la paz': '#Bolivia', 'sucre': '#Bolivia',
-    'paraguay': '#Paraguay', 'asunción': '#Paraguay',
-    'uruguay': '#Uruguay', 'montevideo': '#Uruguay',
-    'guyana': '#Guyana', 'georgetown': '#Guyana',
-    'surinam': '#Surinam', 'suriname': '#Surinam',
-
-    # Norteamérica (30%)
-    'mexico': '#México', 'méxico': '#México', 'cdmx': '#México', 'ciudad de mexico': '#México',
-    'estados unidos': '#EEUU', 'eeuu': '#EEUU', 'usa': '#EEUU', 'washington': '#EEUU', 'nueva york': '#EEUU',
-    'canada': '#Canadá', 'canadá': '#Canadá', 'ottawa': '#Canadá', 'toronto': '#Canadá',
-
-    # Centroamérica y Caribe (20%)
-    'guatemala': '#Guatemala', 'ciudad de guatemala': '#Guatemala',
-    'el salvador': '#ElSalvador', 'san salvador': '#ElSalvador',
-    'honduras': '#Honduras', 'tegucigalpa': '#Honduras',
-    'nicaragua': '#Nicaragua', 'managua': '#Nicaragua',
-    'costa rica': '#CostaRica', 'san josé': '#CostaRica',
-    'panama': '#Panamá', 'panamá': '#Panamá', 'ciudad de panama': '#Panamá',
-    'cuba': '#Cuba', 'la habana': '#Cuba',
-    'república dominicana': '#RepúblicaDominicana', 'dominicana': '#RepúblicaDominicana', 'santo domingo': '#RepúblicaDominicana',
-    'puerto rico': '#PuertoRico', 'san juan': '#PuertoRico',
-    'haití': '#Haití', 'haiti': '#Haití', 'puerto príncipe': '#Haití',
-    'jamaica': '#Jamaica', 'kingston': '#Jamaica',
-    'trinidad': '#TrinidadYTobago', 'tobago': '#TrinidadYTobago',
-    'bahamas': '#Bahamas', 'nassau': '#Bahamas',
-    'barbados': '#Barbados',
-    'belice': '#Belice', 'belize': '#Belice',
-}
-
-# Hashtags por categoría/tema
-HASHTAGS_CATEGORIA = {
-    'politica': ['#Política', '#PolíticaLATAM', '#Gobierno', '#Elecciones'],
-    'economia': ['#Economía', '#EconomíaLATAM', '#Finanzas', '#Mercados', '#Inflación'],
-    'internacional': ['#Internacional', '#Mundo', '#Global', '#Diplomacia'],
-    'tecnologia': ['#Tecnología', '#Tech', '#Innovación', '#Digital', '#IA', '#Ciberseguridad'],
-    'migracion': ['#Migración', '#Migrantes', '#Frontera', '#Asilo', '#Refugiados'],
-    'narcotrafico': ['#Narco', '#Cárteles', '#Seguridad', '#CrimenOrganizado', '#Drogas'],
-    'guerra': ['#Guerra', '#Conflicto', '#Militar', '#Defensa', '#Geopolítica'],
-    'conflicto': ['#Conflicto', '#Crisis', '#Violencia', '#Protestas', '#Manifestaciones'],
-    'ciencia': ['#Ciencia', '#Investigación', '#Descubrimiento', '#Salud', '#Medicina'],
-    'corrupcion': ['#Corrupción', '#Impunidad', '#Transparencia', '#Justicia'],
-    'escandalo': ['#Escándalo', '#Polemica', '#Controversia'],
-    'deporte': ['#Deportes', '#Fútbol', '#DeporteLATAM'],
-    'urgente': ['#Urgente', '#ÚltimaHora', '#Alerta', '#Breaking'],
-    'default': ['#NoticiasVirales', '#LATAM', '#Actualidad']
-}
-
-# Palabras clave por categoría para detección
 PALABRAS_CLAVE = {
-    'politica': ['presidente', 'gobierno', 'congreso', 'senado', 'diputado', 'senador', 'ministro', 
-                 'elecciones', 'voto', 'partido', 'oposición', 'oficialismo', 'impeachment', 
-                 'golpe de estado', 'golpe estado', 'dictadura', 'democracia', 'gabinete', 
-                 'legislatura', 'parlamento', 'cámara', 'tribunal', 'corte suprema', 
-                 'milei', 'petro', 'maduro', 'lula', 'boric', 'amlo', 'trump', 'biden'],
+    # ── Política ─────────────────────────────────────────────
+    'politica': [
+        # Figuras actuales Chile 2026
+        'josé antonio kast', 'kast', 'presidente de chile', 'presidente kast',
+        'partido republicano', 'republicanos', 'gobierno de kast',
+        'johannes kaiser', 'kaiser',
+        'gabriel boric', 'boric', 'expresidente boric',
+        'jeannette jara', 'jara',
+        'evelyn matthei', 'matthei',
+        'vlado mirosevic', 'mirosevic',
+        # Instituciones
+        'gobierno', 'congreso nacional', 'senado', 'cámara de diputados',
+        'diputado', 'diputada', 'senador', 'senadora',
+        'ministro', 'ministra', 'ministerio',
+        'gabinete', 'moneda', 'la moneda',
+        'parlamento', 'constitución', 'plebiscito', 'referéndum',
+        'alcalde', 'alcaldesa', 'municipalidad', 'municipio',
+        'partido', 'coalición', 'apruebo dignidad', 'chile vamos',
+        'oposición', 'oficialismo', 'elecciones municipales',
+        'elecciones presidenciales', 'primarias', 'segunda vuelta',
+        'servel', 'tribunal constitucional', 'contraloria',
+    ],
 
-    'economia': ['economía', 'económica', 'finanzas', 'mercado', 'bolsa', 'inflación', 
-                 'devaluación', 'peso', 'dólar', 'euro', 'bitcoin', 'cripto', 'banco central',
-                 'reservas', 'deuda', 'fmi', 'bm', 'comercio', 'exportación', 'importación',
-                 'pib', 'recesión', 'crisis económica', 'bonos', 'inversión', 'empresas'],
+    # ── Economía ──────────────────────────────────────────────
+    'economia': [
+        'economía', 'finanzas', 'mercado', 'bolsa', 'inflación', 'ipc',
+        'peso chileno', 'dólar', 'tipo de cambio', 'banco central',
+        'deuda', 'desempleo', 'cesantía', 'empleo', 'trabajo',
+        'pib', 'recesión', 'inversión', 'exportación', 'importación',
+        'isapre', 'afp', 'pensión', 'jubilación', 'reforma previsional',
+        'codelco', 'litio', 'cobre', 'minería', 'precio del cobre',
+        'enap', 'bencina', 'combustible', 'tarifas', 'luz', 'agua',
+        'sueldo mínimo', 'salario mínimo', 'reajuste',
+        'impuesto', 'tributario', 'sii', 'hacienda',
+        'retail', 'falabella', 'cencosud', 'ripley', 'quiebra',
+        'startup chilena', 'emprendimiento',
+    ],
 
-    'internacional': ['onu', 'oea', 'union europea', 'otan', 'g20', 'g7', 'brics',
-                      'relaciones exteriores', 'embajada', 'embajador', 'sanciones',
-                      'acuerdo internacional', 'tratado', 'cumbre', 'cumbre de las américas'],
+    # ── Seguridad ciudadana (NUEVA) ────────────────────────────
+    'seguridad': [
+        'seguridad ciudadana', 'delincuencia', 'inseguridad',
+        'portonazo', 'carjacking', 'robo con violencia', 'asalto a mano armada',
+        'banda delictual', 'banda criminal', 'crimen organizado',
+        'tren de aragua', 'pandilla', 'extorsión', 'cobro de piso',
+        'sicariato', 'sicario', 'ajuste de cuentas',
+        'zona roja', 'punto de droga', 'narcomenudeo',
+        'plan de seguridad', 'estado de excepción',
+        'carabineros baleado', 'carabinero muerto', 'carabinero herido',
+        'pdi operativo', 'fiscalía investigación', 'detenidos operativo',
+        'femicidio', 'violencia intrafamiliar', 'vif',
+        'desaparecido', 'desaparecida', 'persona desaparecida',
+        'cámara de seguridad', 'imputado formalizado',
+    ],
 
-    'tecnologia': ['tecnología', 'tech', 'inteligencia artificial', 'ia', 'chatgpt', 
-                   'ciberseguridad', 'hackeo', 'hacker', 'ciberataque', 'digital', 
-                   'internet', 'redes sociales', 'meta', 'google', 'apple', 'microsoft',
-                   'startup', 'innovación', '5g', 'telecomunicaciones', 'satélite'],
+    # ── Policial / Judicial ────────────────────────────────────
+    'policial': [
+        'detenido', 'detenida', 'arrestado', 'arrestada',
+        'carabineros', 'pdi', 'fiscalía', 'fiscal',
+        'homicidio', 'asesinato', 'crimen', 'robo',
+        'narcotráfico', 'droga', 'cocaína', 'pasta base', 'marihuana',
+        'imputado', 'imputada', 'formalizado', 'formalizada',
+        'condena', 'sentencia', 'tribunal oral', 'juzgado',
+        'prisión preventiva', 'sobreseimiento', 'querella',
+        'investigado', 'investigación penal', 'delito',
+        'accidente de tránsito', 'accidente fatal',
+    ],
 
-    'migracion': ['migración', 'migrantes', 'inmigración', 'frontera', 'fronteriza',
-                  'deportación', 'asilo', 'refugiado', 'coyote', 'tráfico personas',
-                  'caravana migrante', 'muro', 'visas', 'green card', 'remesas'],
+    # ── Social / Vivienda (NUEVA) ──────────────────────────────
+    'social': [
+        'vivienda', 'vivienda social', 'conjunto habitacional',
+        'serviu', 'subsidio habitacional', 'lista de espera vivienda',
+        'campamento', 'toma de terreno', 'allegados',
+        'pobreza', 'vulnerabilidad', 'exclusión social',
+        'pensión básica solidaria', 'aporte previsional solidario',
+        'registro social de hogares', 'rsh',
+        'bono', 'transferencia social', 'ayuda gobierno',
+        'adulto mayor', 'tercera edad', 'discapacidad',
+        'migrantes', 'inmigración', 'refugiados en chile',
+        'pueblos originarios', 'mapuche derechos',
+        'desigualdad', 'brecha social', 'movilidad social',
+        'fila de atención', 'lista de espera salud',
+        'fonasa', 'cesfam', 'consultorio',
+    ],
 
-    'narcotrafico': ['narcotráfico', 'cartel', 'cártel', 'sinaloa', 'jalisco', 'cjng',
-                     'medellín', 'cali', 'pablo escobar', 'el chapo', 'fentanilo',
-                     'cocaína', 'marihuana', 'droga', 'tráfico drogas', 'lavado dinero',
-                     'crimen organizado', 'mafia', 'narcotraficante'],
+    # ── Educación (NUEVA) ──────────────────────────────────────
+    'educacion': [
+        'educación', 'colegio', 'escuela', 'liceo',
+        'universidad', 'universidades', 'cruch',
+        'mineduc', 'ministerio de educación',
+        'paes', 'psu', 'prueba de admisión',
+        'gratuidad universitaria', 'beca', 'crédito universitario', 'cae',
+        'huelga estudiantil', 'toma de colegio', 'paro docente',
+        'profesores', 'docentes', 'asistentes de educación',
+        'mejoramiento salarial docente',
+        'sala cuna', 'jardín infantil', 'junji', 'integra',
+        'convivencia escolar', 'bullying', 'acoso escolar',
+        'deserción escolar', 'matrícula', 'sostenedor',
+        'prueba pisa', 'simce', 'rendimiento académico',
+        'educación superior', 'postgrado', 'magíster',
+    ],
 
-    'guerra': ['guerra', 'conflicto armado', 'ejército', 'militar', 'defensa', 
-               'armas', 'misil', 'bomba', 'ataque', 'invasión', 'ucrania', 'hamas',
-               'israel', 'palestina', 'gaza', 'terrorismo', 'yihad', 'extremismo'],
+    # ── Internacional ──────────────────────────────────────────
+    'internacional': [
+        'onu', 'eeuu', 'argentina', 'perú', 'bolivia', 'brasil',
+        'relaciones exteriores', 'embajada', 'canciller', 'acuerdo',
+        'tratado', 'cumbre', 'guerra', 'conflicto', 'crisis global',
+        'cancillería chilena', 'política exterior', 'diálogo bilateral',
+    ],
 
-    'conflicto': ['protesta', 'manifestación', 'marcha', 'huelga', 'paro', 'corte ruta',
-                  'disturbios', 'enfrentamiento', 'represión', 'violencia', 'saqueo',
-                  'crisis política', 'inestabilidad', 'tensión', 'conflicto social'],
+    # ── Tecnología ────────────────────────────────────────────
+    'tecnologia': [
+        'tecnología', 'inteligencia artificial', 'ia', 'startup', 'digital',
+        'ciberseguridad', 'hackeo', 'internet', 'app', 'innovación',
+        'transformación digital', 'fintech', 'e-commerce',
+    ],
 
-    'ciencia': ['ciencia', 'investigación', 'estudio', 'descubrimiento', 'salud',
-                'pandemia', 'vacuna', 'virus', 'covid', 'medicina', 'hospital',
-                'médico', 'enfermedad', 'tratamiento', 'cáncer', 'espacio', 'nasa',
-                'cambio climático', 'calentamiento global', 'medio ambiente'],
+    # ── Deporte ───────────────────────────────────────────────
+    'deporte': [
+        'fútbol', 'selección chilena', 'la roja', 'copa', 'mundial', 'gol',
+        'partido', 'torneo', 'campeonato', 'tenis', 'atletismo', 'ciclismo',
+        'universidad de chile', 'colo colo', 'universidad católica',
+        'conmebol', 'clasificatorias', 'eliminatorias',
+        'alexis sánchez', 'arturo vidal', 'claudio bravo',
+        'ben brereton', 'gary medel',
+        'padel', 'basquetbol chile', 'volleyball chile',
+    ],
 
-    'corrupcion': ['corrupción', 'soborno', 'coima', 'mordida', 'desfalco', 'fraude',
-                   'evasión', 'impuestos', 'lavado activos', 'enriquecimiento ilícito',
-                   'obras públicas', 'licitación', 'compra votos', 'impunidad'],
+    # ── Ciencia / Salud ───────────────────────────────────────
+    'ciencia': [
+        'salud', 'hospital', 'medicina', 'vacuna', 'enfermedad', 'minsal',
+        'investigación científica', 'descubrimiento', 'científico', 'pandemia',
+        'dengue', 'hantavirus', 'influenza', 'virus', 'brote',
+        'oncología', 'cáncer', 'trasplante', 'cirugía',
+        'lista de espera hospital', 'urgencias', 'cesfam saturado',
+    ],
 
-    'escandalo': ['escándalo', 'polémica', 'controversia', 'denuncia', 'acusación',
-                  'investigación', 'juicio', 'juicio político', 'impeachment',
-                  'filtración', 'wikileaks', 'panama papers', 'pandora papers']
+    # ── Medioambiente ─────────────────────────────────────────
+    'medioambiente': [
+        'medioambiente', 'incendio forestal', 'terremoto', 'tsunami', 'maremoto',
+        'sequía', 'contaminación', 'cambio climático', 'glaciar', 'patagonia',
+        'lluvia', 'inundación', 'alerta temprana', 'erupción volcánica', 'volcán',
+        'ola de calor', 'ola de frío', 'nevazón', 'aluvión',
+        'zona de catástrofe', 'alerta roja', 'alerta amarilla',
+        'onemi', 'senapred', 'conaf',
+    ],
+
+    # ── Cultura / Entretenimiento ─────────────────────────────
+    'cultura': [
+        'cultura', 'arte', 'música', 'cine', 'teatro', 'festival',
+        'patrimonio', 'tradición', 'gastronomía', 'turismo',
+        'viña del mar festival', 'festival de viña', 'lollapalooza chile',
+        'fiestas patrias', 'dieciocho', '18 de septiembre',
+        'libro', 'literatura chilena', 'premio', 'reconocimiento',
+        'farandula', 'farándula', 'televisión chilena', 'tvn', 'canal 13',
+    ],
+
+    # ── Conflicto social ──────────────────────────────────────
+    'conflicto': [
+        'protesta', 'manifestación', 'huelga', 'paro', 'disturbio',
+        'represión', 'violencia', 'enfrentamiento', 'mapuche', 'araucanía',
+        'wallmapu', 'lof', 'weichafe', 'quema de camiones',
+        'corte de ruta', 'barricada', 'desmanes',
+    ],
+
+    # ── Corrupción ────────────────────────────────────────────
+    'corrupcion': [
+        'corrupción', 'soborno', 'desfalco', 'fraude', 'lavado de activos',
+        'enriquecimiento ilícito', 'licitación irregular', 'caso judicial',
+        'peculado', 'malversación', 'colusión', 'caso facturas',
+        'audit', 'contraloría investiga', 'funcionario imputado',
+    ],
+
+    # ── Escándalo ─────────────────────────────────────────────
+    'escandalo': [
+        'escándalo', 'polémica', 'controversia', 'denuncia', 'acusación',
+        'filtración', 'revelación', 'juicio', 'renuncia exigida',
+        'audio filtrado', 'chats filtrados', 'grabación secreta',
+        'conflicto de interés', 'nepotismo', 'tráfico de influencias',
+    ],
 }
+
+# ═══════════════════════════════════════════════════════════════
+# CTA — LLAMADAS A LA ACCIÓN PODEROSAS
+# ═══════════════════════════════════════════════════════════════
+
+CTAS_POR_CATEGORIA = {
+    'politica': [
+        "🔴 ¿Estás de acuerdo con esta decisión del gobierno? COMENTA tu opinión 👇",
+        "⚡ Esta noticia está dando que hablar. ¿Qué opinas tú? DÉJALO en los comentarios",
+        "🗳️ La política chilena no para. ¿Apoya o rechaza esta medida? Cuéntanos 👇",
+        "💬 Miles de chilenos debaten esto ahora mismo. ¿Y tú qué piensas? COMENTA",
+    ],
+    'economia': [
+        "💸 ¿Cómo te afecta esto en tu bolsillo? CUÉNTANOS abajo 👇",
+        "📊 La economía chilena en movimiento. ¿Sientes el impacto? COMENTA",
+        "🚨 Esto afecta a todos los chilenos. COMPARTE para que más personas lo sepan 🔁",
+        "💰 ¿Tu familia resiente este cambio económico? Dinos en los comentarios 👇",
+    ],
+    'seguridad': [
+        "🚨 La seguridad de Chile nos preocupa a TODOS. ¿Cuál es tu solución? COMENTA 👇",
+        "😤 ¿Cansado/a de la delincuencia en tu barrio? COMENTA y COMPARTE 🔁",
+        "🔴 ALERTA CIUDADANA — COMPARTE para que tu comunidad esté informada 🔁",
+        "⚠️ ¿Te sientes seguro/a en Chile hoy? SÍ o NO en los comentarios 👇",
+        "🛡️ Chile merece vivir sin miedo. ¿Estás de acuerdo? COMENTA y COMPARTE 🔁",
+    ],
+    'policial': [
+        "🚨 URGENTE. COMPARTE para que tu comunidad esté informada 🔁",
+        "⚖️ ¿La justicia actuó bien en este caso? COMENTA tu opinión 👇",
+        "🔴 Noticia de alto impacto. COMPARTE con tu familia y amigos 🔁",
+        "😤 ¿Crees que la pena fue justa? COMENTA abajo 👇",
+    ],
+    'social': [
+        "🏠 El derecho a una vivienda digna es de todos. ¿Estás de acuerdo? COMENTA 👇",
+        "💙 ¿Conoces a alguien que necesite este apoyo? COMPARTE para que llegue a más personas 🔁",
+        "🇨🇱 Chile merece más igualdad. ¿Qué cambiarías tú? COMENTA 👇",
+        "👨‍👩‍👧 ¿Esta política social te parece suficiente? SÍ o NO en los comentarios 👇",
+        "📢 Información que muchas familias chilenas necesitan saber. COMPARTE 🔁",
+    ],
+    'educacion': [
+        "📚 La educación de Chile está en juego. ¿Qué opinas? COMENTA 👇",
+        "🎓 ¿Crees que la educación chilena va por buen camino? DINOS abajo 👇",
+        "✏️ El futuro de Chile está en las aulas. COMPARTE si te importa la educación 🔁",
+        "👨‍🏫 ¿Apoyarías esta medida para mejorar la educación? COMENTA 👇",
+        "📢 Información clave para estudiantes y apoderados. COMPARTE 🔁",
+    ],
+    'internacional': [
+        "🌎 El mundo habla de Chile. ¿Estás orgulloso/a de ser chileno/a? COMENTA 🇨🇱",
+        "🌐 Esto impacta directamente a Chile. COMPARTE para que todos lo sepan 🔁",
+        "🗺️ Noticia que cruza fronteras. ¿Cómo crees que afecta a nuestro país? 👇",
+    ],
+    'deporte': [
+        "⚽ ¡CHILE! ¿Crees que podemos lograrlo? COMENTA con tu pronóstico 🇨🇱",
+        "🏆 El deporte chileno en acción. ¿Los apoyas? DALE LIKE y COMPARTE 🔁",
+        "🔥 ¡La Roja necesita tu apoyo! COMENTA y COMPARTE para alentarlos 💪",
+    ],
+    'medioambiente': [
+        "🌱 Nuestra tierra chilena en peligro. COMPARTE para crear conciencia 🔁",
+        "🔥 Emergencia en Chile. COMPARTE para que todos estén informados 🚨",
+        "🌊 El medioambiente chileno nos necesita. ¿Qué hacemos? COMENTA 👇",
+    ],
+    'ciencia': [
+        "🧬 La ciencia chilena avanza. COMPARTE esta noticia importante 🔁",
+        "💊 Información de salud que todos debemos conocer. COMPARTE 🔁",
+        "🏥 Tu salud importa. GUARDA esta publicación y COMPÁRTELA 👇",
+    ],
+    'cultura': [
+        "🎭 Orgullo chileno. ¿Sabías esto de nuestra cultura? COMENTA 🇨🇱",
+        "🎵 Chile tiene mucho que mostrar al mundo. COMPARTE si te enorgullece 🔁",
+    ],
+    'conflicto': [
+        "⚡ La situación se tensiona. ¿Cómo lo ves tú? COMENTA abajo 👇",
+        "🔴 Esto está pasando en Chile AHORA. COMPARTE para informar 🔁",
+        "💬 Tu voz importa. ¿Qué solución propones? COMENTA 👇",
+    ],
+    'corrupcion': [
+        "😡 ¿Indignado/a? COMPARTE para que nadie se olvide de esto 🔁",
+        "⚖️ La justicia debe actuar. ¿Estás de acuerdo? COMENTA 👇",
+        "🔎 Chile merece transparencia. COMPARTE para exigirla juntos 🔁",
+    ],
+    'escandalo': [
+        "😮 ¿Lo podías creer? COMENTA tu reacción 👇",
+        "🔥 La polémica que sacude Chile. ¿Qué opinas? DÉJALO en comentarios",
+        "💬 Todo Chile habla de esto. ¿Y tú? COMENTA y COMPARTE 🔁",
+    ],
+    'default': [
+        "📢 Noticia importante para Chile. COMPARTE para que todos la vean 🔁",
+        "🇨🇱 Información que todo chileno debe saber. COMPARTE 🔁",
+        "💬 ¿Qué opinas de esto? COMENTA abajo y COMPARTE con tu familia 👇",
+        "🔔 Mantente informado/a. COMPARTE esta noticia con quienes más quieres 🔁",
+    ],
+}
+
+def obtener_cta(categoria, titulo=''):
+    """Retorna un CTA aleatorio según categoría, con urgencia adicional si aplica"""
+    palabras_urgencia = ['urgente', 'alerta', 'emergencia', 'terremoto', 'tsunami',
+                         'incendio', 'ataque', 'explosión', 'fallecido', 'muerto']
+    titulo_lower = titulo.lower()
+
+    if any(p in titulo_lower for p in palabras_urgencia):
+        return "🚨 URGENTE — COMPARTE AHORA para que todos en Chile estén informados 🔁🇨🇱"
+
+    ctas = CTAS_POR_CATEGORIA.get(categoria, CTAS_POR_CATEGORIA['default'])
+    return random.choice(ctas)
+
 
 # ═══════════════════════════════════════════════════════════════
 # FUNCIONES UTILITARIAS
 # ═══════════════════════════════════════════════════════════════
 
 def log(mensaje, tipo='info'):
-    iconos = {'info': '[i]', 'exito': '[OK]', 'error': '[ERR]', 'advertencia': '[!]', 'imagen': '[IMG]'}
+    iconos = {
+        'info': '[i]', 'exito': '[OK]', 'error': '[ERR]',
+        'advertencia': '[!]', 'imagen': '[IMG]', 'debug': '[D]'
+    }
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{timestamp}] {iconos.get(tipo, '[i]')} {mensaje}")
 
@@ -190,10 +482,10 @@ def cargar_json(ruta, default=None):
 def guardar_json(ruta, datos):
     try:
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        temp_path = f"{ruta}.tmp"
-        with open(temp_path, 'w', encoding='utf-8') as f:
+        temp = f"{ruta}.tmp"
+        with open(temp, 'w', encoding='utf-8') as f:
             json.dump(datos, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, ruta)
+        os.replace(temp, ruta)
         return True
     except Exception as e:
         log(f"Error guardando JSON: {e}", 'error')
@@ -211,12 +503,9 @@ def normalizar_url(url):
         return ""
     try:
         parsed = urlparse(url)
-        netloc = parsed.netloc.lower()
-        path = parsed.path.lower()
-        netloc = re.sub(r'^(www\.|m\.|mobile\.|amp\.)', '', netloc)
-        path = re.sub(r'/index\.(html|php|htm|asp)$', '/', path)
-        path = path.rstrip('/')
-        path = re.sub(r'\.html?$', '', path)
+        netloc = re.sub(r'^(www\.|m\.|mobile\.|amp\.)', '', parsed.netloc.lower())
+        path   = re.sub(r'/index\.(html|php|htm)$', '/', parsed.path.lower())
+        path   = re.sub(r'\.html?$', '', path.rstrip('/'))
         return f"{netloc}{path}"
     except:
         return url.lower().strip()
@@ -224,21 +513,19 @@ def normalizar_url(url):
 def calcular_similitud(t1, t2):
     if not t1 or not t2:
         return 0.0
-    def normalizar(t):
+    stop = {'el','la','de','y','en','the','of','a','que','con','un','una',
+            'para','por','al','del','lo','le','se','es','son','fue','era','será'}
+    def norm(t):
         t = re.sub(r'[^\w\s]', '', t.lower().strip())
-        t = re.sub(r'\s+', ' ', t)
-        stop_words = {'el', 'la', 'de', 'y', 'en', 'the', 'of', 'a', 'que', 'con', 'un', 'una', 'para', 'por', 'con', 'al', 'del', 'lo', 'le', 'se', 'es', 'son', 'fue', 'era', 'será'}
-        palabras = [p for p in t.split() if p not in stop_words and len(p) > 3]
-        return ' '.join(palabras)
-    return SequenceMatcher(None, normalizar(t1), normalizar(t2)).ratio()
+        return ' '.join(p for p in re.sub(r'\s+', ' ', t).split()
+                        if p not in stop and len(p) > 3)
+    return SequenceMatcher(None, norm(t1), norm(t2)).ratio()
 
 def es_titulo_generico(titulo):
     if not titulo:
         return True
-    tl = titulo.lower().strip()
-    palabras = re.findall(r'\b\w+\b', tl)
-    palabras_significativas = [p for p in palabras if len(p) > 4]
-    return len(set(palabras_significativas)) < 3
+    palabras = [p for p in re.findall(r'\b\w+\b', titulo.lower()) if len(p) > 4]
+    return len(set(palabras)) < 3
 
 def limpiar_texto(texto):
     if not texto:
@@ -251,333 +538,270 @@ def limpiar_texto(texto):
     return t.strip()
 
 def detectar_categoria(titulo, descripcion):
-    """Detecta la categoría de la noticia basada en palabras clave"""
     texto = f"{titulo} {descripcion}".lower()
+    puntajes = {cat: sum(1 for kw in kws if kw in texto)
+                for cat, kws in PALABRAS_CLAVE.items()}
+    max_cat = max(puntajes, key=puntajes.get)
+    return max_cat if puntajes[max_cat] > 0 else 'default'
 
-    puntajes = {}
-    for categoria, palabras in PALABRAS_CLAVE.items():
-        puntajes[categoria] = sum(1 for palabra in palabras if palabra in texto)
-
-    if puntajes:
-        max_categoria = max(puntajes, key=puntajes.get)
-        if puntajes[max_categoria] > 0:
-            return max_categoria
-
-    return 'default'
-
-def detectar_ubicacion(titulo, descripcion):
-    """Detecta el país/ubicación de la noticia"""
+def detectar_region_chile(titulo, descripcion):
     texto = f"{titulo} {descripcion}".lower()
-
-    for pais, hashtag in PAISES_LATAM.items():
-        if pais in texto:
+    for lugar, hashtag in REGIONES_CHILE.items():
+        if lugar in texto:
             return hashtag
-
     return None
 
 def generar_hashtags(titulo, descripcion, categoria):
-    """Genera hashtags relevantes para la noticia"""
-    hashtags = []
+    hashtags = ['#Chile', '#ChileNoticias']
 
-    # Hashtag de ubicación
-    ubicacion = detectar_ubicacion(titulo, descripcion)
-    if ubicacion:
-        hashtags.append(ubicacion)
+    region = detectar_region_chile(titulo, descripcion)
+    if region and region not in hashtags:
+        hashtags.append(region)
 
-    # Hashtags de categoría
-    if categoria in HASHTAGS_CATEGORIA:
-        hashtags.extend(HASHTAGS_CATEGORIA[categoria][:2])  # Máximo 2 de categoría
-    else:
-        hashtags.extend(HASHTAGS_CATEGORIA['default'])
+    cat_tags = HASHTAGS_CATEGORIA.get(categoria, HASHTAGS_CATEGORIA['default'])
+    for tag in cat_tags[:2]:
+        if tag not in hashtags:
+            hashtags.append(tag)
 
-    # Hashtags específicos del contenido
+    # Tag de urgencia si aplica
     texto = f"{titulo} {descripcion}".lower()
+    if any(p in texto for p in ['urgente', 'última hora', 'alerta', 'terremoto', 'tsunami']):
+        if '#Urgente' not in hashtags:
+            hashtags.append('#Urgente')
 
-    # Detectar temas específicos adicionales
-    if any(p in texto for p in ['trump', 'biden', 'eeuu', 'estados unidos']):
-        if '#EEUU' not in hashtags:
-            hashtags.append('#EEUU')
-
-    if any(p in texto for p in ['milei', 'argentina']):
-        if '#Argentina' not in hashtags:
-            hashtags.append('#Argentina')
-
-    if any(p in texto for p in ['petro', 'colombia']):
-        if '#Colombia' not in hashtags:
-            hashtags.append('#Colombia')
-
-    if any(p in texto for p in ['maduro', 'venezuela']):
-        if '#Venezuela' not in hashtags:
-            hashtags.append('#Venezuela')
-
-    if any(p in texto for p in ['boric', 'chile']):
-        if '#Chile' not in hashtags:
-            hashtags.append('#Chile')
-
-    if any(p in texto for p in ['lula', 'brasil']):
-        if '#Brasil' not in hashtags:
-            hashtags.append('#Brasil')
-
-    if any(p in texto for p in ['amlo', 'méxico', 'mexico']):
-        if '#México' not in hashtags:
-            hashtags.append('#México')
-
-    # Hashtags generales siempre presentes
-    hashtags.append('#NoticiasVirales')
-    hashtags.append('#LATAM')
-
-    # Eliminar duplicados manteniendo orden
-    hashtags_unicos = []
+    # Deduplicar
+    vistos = []
     for h in hashtags:
-        if h not in hashtags_unicos:
-            hashtags_unicos.append(h)
+        if h not in vistos:
+            vistos.append(h)
 
-    return ' '.join(hashtags_unicos[:6])  # Máximo 6 hashtags
+    return ' '.join(vistos[:7])
 
-def calcular_puntaje_viral(titulo, desc):
+
+# ═══════════════════════════════════════════════════════════════
+# PUNTAJE VIRAL — PRIORIZA CHILE + IMAGEN
+# ═══════════════════════════════════════════════════════════════
+
+def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_chile=''):
     txt = f"{titulo} {desc}".lower()
     puntaje = 0
 
-    # Palabras de alto impacto
-    palabras_alta = ["golpe de estado", "corrupcion", "dictadura", "protestas", "crisis", 
-                     "impeachment", "masacre", "feminicidio", "escandalo", "muerte", 
-                     "viral", "trump", "milei", "amlo", "petro", "maduro", "guerra",
-                     "cártel", "narco", "fentanilo", "inflación", "devaluación",
-                     "hackeo", "ciberataque", "pandemia", "vacuna", "urgente"]
+    # ── Bonus imagen (máxima prioridad) ──────────────────────
+    if tiene_imagen:
+        puntaje += BONUS_IMAGEN
 
-    for palabra in palabras_alta:
-        if palabra in txt:
-            puntaje += 10
-            if palabra in titulo.lower():
-                puntaje += 5
+    # ── Bonus Chile ──────────────────────────────────────────
+    if nivel_chile == 'directo':
+        puntaje += BONUS_CHILE_DIRECTO
+    elif nivel_chile == 'relacionado':
+        puntaje += 10
 
-    # Bonus por longitud óptima de título
-    if 40 <= len(titulo) <= 90:
+    # Fuente chilena (.cl)
+    if '.cl' in fuente.lower() or 'chile' in fuente.lower():
+        puntaje += BONUS_FUENTE_CL
+
+    # ── Impacto del contenido ────────────────────────────────
+    palabras_impacto = [
+        'urgente', 'alerta', 'terremoto', 'tsunami', 'incendio', 'emergencia',
+        'fallecido', 'muerto', 'herido', 'desaparecido', 'rescate',
+        'escándalo', 'denuncia', 'corrupción', 'detenido', 'crimen',
+        'protesta', 'huelga', 'paro nacional', 'conflicto',
+        'récord', 'histórico', 'primera vez', 'inédito',
+        'boric', 'gobierno', 'congreso', 'senado',
+        'economía', 'inflación', 'dólar', 'pensiones',
+    ]
+    for p in palabras_impacto:
+        if p in txt:
+            puntaje += 8
+            if p in titulo.lower():
+                puntaje += 4
+
+    # Longitud óptima de título
+    if 40 <= len(titulo) <= 100:
         puntaje += 5
 
-    # Bonus por números (datos específicos)
+    # Números en el título (datos concretos)
     if re.search(r'\d+', titulo):
         puntaje += 3
 
-    # Bonus por ubicación detectada (relevancia local)
-    if detectar_ubicacion(titulo, desc):
-        puntaje += 5
-
     return puntaje
 
+
 # ═══════════════════════════════════════════════════════════════
-# DESCARGAR IMAGEN ORIGINAL
+# IMAGEN — Descargar, overlay, backup
 # ═══════════════════════════════════════════════════════════════
 
 def descargar_imagen(url_imagen, titulo):
-    """Descarga imagen original de la noticia"""
     if not url_imagen:
         return None
-
     try:
-        log(f"Descargando imagen original...", 'imagen')
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-
-        response = requests.get(url_imagen, headers=headers, timeout=15)
-
-        if response.status_code == 200:
-            content_type = response.headers.get('content-type', '')
-            if 'image' not in content_type:
-                log(f"URL no es imagen: {content_type}", 'advertencia')
-                return None
-
-            img_path = f'/tmp/original_{generar_hash(titulo)}.jpg'
-            with open(img_path, 'wb') as f:
-                f.write(response.content)
-
-            if os.path.getsize(img_path) > 10000:
-                log(f"Imagen descargada: {img_path} ({os.path.getsize(img_path)} bytes)", 'exito')
-                return img_path
-            else:
-                os.remove(img_path)
-                log("Imagen muy pequeña, descartada", 'advertencia')
-                return None
-        else:
-            log(f"Error descargando imagen: HTTP {response.status_code}", 'error')
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url_imagen, headers=headers, timeout=15)
+        if r.status_code != 200:
             return None
-
+        if 'image' not in r.headers.get('content-type', ''):
+            return None
+        path = f'/tmp/orig_{generar_hash(titulo)}.jpg'
+        with open(path, 'wb') as f:
+            f.write(r.content)
+        if os.path.getsize(path) > 10_000:
+            log(f"Imagen descargada OK ({os.path.getsize(path)} bytes)", 'imagen')
+            return path
+        os.remove(path)
+        return None
     except Exception as e:
-        log(f"Error descargando: {e}", 'error')
+        log(f"Error descargando imagen: {e}", 'error')
         return None
 
-# ═══════════════════════════════════════════════════════════════
-# CREAR IMAGEN CON OVERLAY
-# ═══════════════════════════════════════════════════════════════
-
-def crear_imagen_con_overlay(imagen_original_path, titulo, categoria="noticia"):
-    """Agrega overlay de texto sobre imagen original"""
+def crear_imagen_con_overlay(imagen_original_path, titulo, categoria='noticia'):
     try:
-        img = Image.open(imagen_original_path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+        img = Image.open(imagen_original_path).convert('RGB')
         img = img.resize((1200, 630), Image.Resampling.LANCZOS)
-
         draw = ImageDraw.Draw(img)
 
-        try:
-            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
-            font_categoria = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-            font_footer = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-        except:
-            try:
-                font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 42)
-                font_categoria = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 28)
-                font_footer = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 20)
-            except:
-                font_titulo = ImageFont.load_default()
-                font_categoria = font_footer = font_titulo
+        # Fuentes
+        def cargar_fuente(bold=True, size=42):
+            rutas_bold = [
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            ]
+            rutas_regular = [
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+            ]
+            rutas = rutas_bold if bold else rutas_regular
+            for r in rutas:
+                try:
+                    return ImageFont.truetype(r, size)
+                except:
+                    pass
+            return ImageFont.load_default()
+
+        font_titulo    = cargar_fuente(True,  40)
+        font_cat       = cargar_fuente(True,  24)
+        font_cta_small = cargar_fuente(False, 18)
+        font_footer    = cargar_fuente(False, 18)
 
         color_barra = COLORES_BACKUP.get(categoria, COLORES_BACKUP['neutral'])
 
-        # Barra superior
-        draw.rectangle([(0, 0), (1200, 60)], fill=color_barra)
-        draw.text((20, 15), categoria.upper(), font=font_categoria, fill=(255, 255, 255))
-        draw.rectangle([(0, 60), (1200, 65)], fill=(255, 255, 255))
+        # Barra superior con logo
+        draw.rectangle([(0, 0), (1200, 58)], fill=color_barra)
+        draw.text((16, 14), '🇨🇱 VERDAD HOY — NOTICIAS CHILE', font=font_cat, fill=(255, 255, 255))
 
-        # Banda inferior oscura
-        altura_banda = 200
+        # Franja roja lateral izquierda (acento patrio)
+        draw.rectangle([(0, 58), (8, 630)], fill=(210, 16, 52))
+
+        # Banda inferior semitransparente (oscura con gradiente)
+        altura_banda = 220
         for i in range(altura_banda):
-            draw.rectangle([(0, 630 - altura_banda + i), (1200, 630 - altura_banda + i + 1)],
-                          fill=(0, 0, 0))
+            alpha = int(200 * (i / altura_banda))
+            draw.rectangle([(0, 630 - altura_banda + i), (1200, 631 - altura_banda + i)],
+                           fill=(0, 0, 0))
 
         # Título
-        titulo_limpio = titulo[:130]
-        lineas = textwrap.wrap(titulo_limpio, width=32)
-        if len(lineas) > 3:
-            lineas = lineas[:3]
-            lineas[-1] = lineas[-1][:30] + "..."
+        titulo_limpio = titulo[:140]
+        lineas = textwrap.wrap(titulo_limpio, width=34)[:3]
+        if len(lineas) == 3 and len(lineas[-1]) > 30:
+            lineas[-1] = lineas[-1][:28] + '…'
 
-        y_start = 630 - altura_banda + 30
-        for i, linea in enumerate(lineas):
-            y = y_start + (i * 48)
+        y = 630 - altura_banda + 18
+        for linea in lineas:
             draw.text((22, y + 2), linea, font=font_titulo, fill=(0, 0, 0))
-            draw.text((20, y), linea, font=font_titulo, fill=(255, 255, 255))
+            draw.text((20, y),     linea, font=font_titulo, fill=(255, 255, 255))
+            y += 50
+
+        # Separador
+        draw.rectangle([(20, y + 4), (400, y + 6)], fill=(210, 16, 52))
 
         # Footer
         fecha_str = datetime.now().strftime('%d/%m/%Y %H:%M')
-        draw.rectangle([(20, 605), (350, 607)], fill=(255, 255, 255))
-        draw.text((20, 610), f"NOTICIAS VIRALES LATAM 24/7 | {fecha_str}",
-                 font=font_footer, fill=(200, 200, 200))
+        draw.text((20, 605), f'verdadhoy.cl  |  {fecha_str}', font=font_footer, fill=(180, 180, 180))
 
-        img_path = f'/tmp/viral_overlay_{generar_hash(titulo[:50])}.jpg'
-        img.save(img_path, 'JPEG', quality=95)
-
-        log(f"Overlay creado: {img_path}", 'exito')
-        return img_path
-
+        path = f'/tmp/verdadhoy_{generar_hash(titulo[:50])}.jpg'
+        img.save(path, 'JPEG', quality=95)
+        log(f"Imagen overlay lista: {path}", 'exito')
+        return path
     except Exception as e:
         log(f"Error overlay: {e}", 'error')
-        import traceback
-        traceback.print_exc()
         return None
 
-# ═══════════════════════════════════════════════════════════════
-# CREAR IMAGEN BACKUP
-# ═══════════════════════════════════════════════════════════════
-
-def crear_imagen_backup(titulo, categoria="noticia"):
-    """Crea imagen de respaldo con fondo de color sólido"""
+def crear_imagen_backup(titulo, categoria='noticia'):
     try:
-        width, height = 1200, 630
+        w, h = 1200, 630
         color_fondo = COLORES_BACKUP.get(categoria, COLORES_BACKUP['neutral'])
-
-        img = Image.new('RGB', (width, height), color_fondo)
+        img = Image.new('RGB', (w, h), color_fondo)
         draw = ImageDraw.Draw(img)
 
-        for i in range(200):
-            color_gradiente = (
-                max(0, color_fondo[0] - 50),
-                max(0, color_fondo[1] - 50),
-                max(0, color_fondo[2] - 50)
-            )
-            draw.rectangle([(0, height - 200 + i), (width, height - 200 + i + 1)], fill=color_gradiente)
+        def cargar_fuente(bold=True, size=48):
+            rutas = [
+                f'/usr/share/fonts/truetype/dejavu/DejaVuSans-{"Bold" if bold else ""}.ttf',
+                f'/usr/share/fonts/truetype/liberation/LiberationSans-{"Bold" if bold else "Regular"}.ttf',
+            ]
+            for r in rutas:
+                try:
+                    return ImageFont.truetype(r, size)
+                except:
+                    pass
+            return ImageFont.load_default()
 
-        try:
-            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-            font_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-            font_info = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-        except:
-            try:
-                font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 48)
-                font_sub = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 24)
-                font_info = font_sub
-            except:
-                font_titulo = ImageFont.load_default()
-                font_sub = font_info = font_titulo
+        font_titulo  = cargar_fuente(True,  46)
+        font_sub     = cargar_fuente(False, 22)
+        font_cat     = cargar_fuente(False, 20)
 
-        draw.rectangle([(0, 0), (width, 15)], fill=(255, 255, 255))
-        draw.text((50, 35), categoria.upper(), font=font_info, fill=(220, 220, 220))
+        # Franja roja superior
+        draw.rectangle([(0, 0), (w, 12)], fill=(210, 16, 52))
+        # Franja blanca
+        draw.rectangle([(0, 12), (w, 22)], fill=(255, 255, 255))
+        # Logo texto
+        draw.text((30, 30), '🇨🇱 VERDAD HOY — NOTICIAS CHILE', font=font_cat, fill=(220, 220, 220))
+        draw.text((30, 54), categoria.upper(), font=font_cat, fill=(255, 200, 50))
 
-        titulo_limpio = titulo[:140]
-        lineas = textwrap.wrap(titulo_limpio, width=28)
-        if len(lineas) > 4:
-            lineas = lineas[:4]
-            lineas[-1] = lineas[-1][:25] + "..."
+        # Título centrado
+        lineas = textwrap.wrap(titulo[:140], width=26)[:4]
+        if len(lineas) == 4 and len(lineas[-1]) > 24:
+            lineas[-1] = lineas[-1][:22] + '…'
 
-        altura_texto = len(lineas) * 55
-        y_start = ((height - altura_texto) // 2) - 20
+        altura_bloque = len(lineas) * 58
+        y = ((h - altura_bloque) // 2) - 10
 
-        for i, linea in enumerate(lineas):
-            y = y_start + (i * 55)
-            x = 60
-            for offset in [(3, 3), (2, 2), (1, 1)]:
-                draw.text((x + offset[0], y + offset[1]), linea, font=font_titulo, fill=(0, 0, 0))
-            draw.text((x, y), linea, font=font_titulo, fill=(255, 255, 255))
+        for linea in lineas:
+            for off in [(3, 3), (2, 2), (1, 1)]:
+                draw.text((60 + off[0], y + off[1]), linea, font=font_titulo, fill=(0, 0, 0))
+            draw.text((60, y), linea, font=font_titulo, fill=(255, 255, 255))
+            y += 58
 
-        draw.rectangle([(50, height - 80), (width - 50, height - 78)], fill=(255, 255, 255))
-        draw.text((50, height - 70), "NOTICIAS VIRALES LATAM 24/7", font=font_sub, fill=(255, 255, 255))
-        fecha_str = datetime.now().strftime('%d/%m/%Y %H:%M')
-        draw.text((50, height - 40), f"{fecha_str} | Información que importa",
-                 font=font_info, fill=(200, 200, 200))
+        # Footer
+        draw.rectangle([(0, h - 60), (w, h - 58)], fill=(210, 16, 52))
+        fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+        draw.text((30, h - 48), f'verdadhoy.cl  |  {fecha}', font=font_sub, fill=(200, 200, 200))
 
-        img_path = f'/tmp/viral_backup_{generar_hash(titulo[:50])}.jpg'
-        img.save(img_path, 'JPEG', quality=95)
-
-        log(f"Imagen backup creada: {img_path}", 'exito')
-        return img_path
-
+        path = f'/tmp/verdadhoy_backup_{generar_hash(titulo[:50])}.jpg'
+        img.save(path, 'JPEG', quality=95)
+        log(f"Imagen backup lista: {path}", 'exito')
+        return path
     except Exception as e:
-        log(f"Error creando backup: {e}", 'error')
+        log(f"Error backup: {e}", 'error')
         return None
 
-# ═══════════════════════════════════════════════════════════════
-# PROCESAR IMAGEN
-# ═══════════════════════════════════════════════════════════════
-
 def procesar_imagen(noticia):
-    """Decide qué tipo de imagen crear"""
-    titulo = noticia.get('titulo', '')
-    url_imagen = noticia.get('imagen')
+    titulo    = noticia.get('titulo', '')
+    url_img   = noticia.get('imagen')
     categoria = noticia.get('categoria', 'noticia')
 
-    log(f"Categoría: {categoria}", 'info')
-
-    if url_imagen:
-        log(f"URL imagen encontrada: {url_imagen[:80]}...", 'imagen')
-        imagen_original = descargar_imagen(url_imagen, titulo)
-
-        if imagen_original:
-            resultado = crear_imagen_con_overlay(imagen_original, titulo, categoria)
+    if url_img:
+        orig = descargar_imagen(url_img, titulo)
+        if orig:
+            resultado = crear_imagen_con_overlay(orig, titulo, categoria)
             try:
-                os.remove(imagen_original)
+                os.remove(orig)
             except:
                 pass
-
             if resultado:
-                return resultado, "original+overlay"
-            else:
-                log("Falló overlay, usando backup", 'advertencia')
+                return resultado, 'original+overlay'
 
-    log("Creando imagen backup...", 'imagen')
-    return crear_imagen_backup(titulo, categoria), "backup"
+    log("Sin imagen original, creando backup...", 'imagen')
+    return crear_imagen_backup(titulo, categoria), 'backup'
+
 
 # ═══════════════════════════════════════════════════════════════
 # HISTORIAL
@@ -586,8 +810,7 @@ def procesar_imagen(noticia):
 def cargar_historial():
     default = {
         'urls': [], 'urls_normalizadas': [], 'hashes': [], 'timestamps': [],
-        'titulos': [], 'descripciones': [],
-        'estadisticas': {'total_publicadas': 0, 'ultimas_24h': 0}
+        'titulos': [], 'estadisticas': {'total_publicadas': 0}
     }
     h = cargar_json(HISTORIAL_PATH, default)
     for k in default:
@@ -595,371 +818,201 @@ def cargar_historial():
             h[k] = default[k]
     return h
 
-def noticia_ya_publicada(historial, url, titulo, desc=""):
+def noticia_ya_publicada(historial, url, titulo):
     if not historial:
-        return False, "sin_historial"
-
-    url_norm = normalizar_url(url)
-    hash_titulo = generar_hash(titulo)
-
+        return False, 'sin_historial'
     if es_titulo_generico(titulo):
-        return True, "titulo_generico"
+        return True, 'titulo_generico'
+    if normalizar_url(url) in historial.get('urls_normalizadas', []):
+        return True, 'url_duplicada'
+    if generar_hash(titulo) in historial.get('hashes', []):
+        return True, 'hash_duplicado'
+    for t_hist in historial.get('titulos', []):
+        if calcular_similitud(titulo, t_hist) >= UMBRAL_SIMILITUD_TITULO:
+            return True, 'similar'
+    return False, 'nuevo'
 
-    if url_norm in historial.get('urls_normalizadas', []):
-        return True, "url_duplicada"
-
-    if hash_titulo in historial.get('hashes', []):
-        return True, "hash_duplicado"
-
-    for titulo_hist in historial.get('titulos', []):
-        sim = calcular_similitud(titulo, titulo_hist)
-        if sim >= UMBRAL_SIMILITUD_TITULO:
-            return True, f"similitud_titulo_{sim:.2f}"
-
-    return False, "nuevo"
-
-def guardar_historial(historial, url, titulo, desc=""):
-    url_norm = normalizar_url(url)
-    hash_t = generar_hash(titulo)
-
+def guardar_historial(historial, url, titulo):
     historial['urls'].append(url)
-    historial['urls_normalizadas'].append(url_norm)
-    historial['hashes'].append(hash_t)
+    historial['urls_normalizadas'].append(normalizar_url(url))
+    historial['hashes'].append(generar_hash(titulo))
     historial['timestamps'].append(datetime.now().isoformat())
     historial['titulos'].append(titulo)
-    historial['descripciones'].append(desc[:400] if desc else "")
-
     stats = historial.get('estadisticas', {'total_publicadas': 0})
     stats['total_publicadas'] = stats.get('total_publicadas', 0) + 1
     historial['estadisticas'] = stats
-
-    for key in ['urls', 'urls_normalizadas', 'hashes', 'timestamps', 'titulos', 'descripciones']:
+    for key in ['urls', 'urls_normalizadas', 'hashes', 'timestamps', 'titulos']:
         if len(historial[key]) > MAX_TITULOS_HISTORIA:
             historial[key] = historial[key][-MAX_TITULOS_HISTORIA:]
-
     guardar_json(HISTORIAL_PATH, historial)
     return historial
 
+
 # ═══════════════════════════════════════════════════════════════
-# FUENTES RSS POR REGIÓN
+# FUENTES RSS — CHILE PRIMERO
 # ═══════════════════════════════════════════════════════════════
 
-# SUDAMÉRICA (50% de las noticias)
-FEEDS_SUDAMERICA = [
-    # Argentina
-    'https://www.clarin.com/rss/politica/',
-    'https://www.clarin.com/rss/economia/',
-    'https://www.infobae.com/arc/outboundfeeds/rss/argentina/',
-    'https://www.lanacion.com.ar/rss/politica.xml',
-    'https://www.pagina12.com.ar/rss/secciones/el-pais/notas',
-    'https://www.cronista.com/rss/feed.xml',
-    'https://www.ambito.com/rss/home.xml',
-
-    # Chile
-    'https://www.emol.com/rss/economia.xml',
+# ── PRIORIDAD 1: Medios nacionales chilenos ──────────────────
+FEEDS_CHILE_NACIONAL = [
+    # Grandes medios
     'https://www.emol.com/rss/nacional.xml',
+    'https://www.emol.com/rss/economia.xml',
+    'https://www.emol.com/rss/policiales.xml',
+    'https://www.emol.com/rss/deportes.xml',
+    'https://www.emol.com/rss/tendencias.xml',
     'https://www.latercera.com/feed/',
-    'https://www.lacuarta.com/feed/',
     'https://www.biobiochile.cl/feed/',
     'https://www.cooperativa.cl/noticias/rss/',
-
-    # Colombia
-    'https://www.elespectador.com/rss/',
-    'https://www.semana.com/rss/',
-    'https://www.eltiempo.com/rss/',
-    'https://www.bluradio.com/rss/',
-    'https://www.pulzo.com/rss/',
-
-    # Brasil
-    'https://g1.globo.com/rss/g1/politica/',
-    'https://g1.globo.com/rss/g1/economia/',
-    'https://www.folha.uol.com.br/emcimadahora/rss091.xml',
-    'https://www.estadao.com.br/rss/',
-    'https://oglobo.globo.com/rss.xml',
-
-    # Perú
-    'https://elcomercio.pe/feed/',
-    'https://larepublica.pe/rss/',
-    'https://gestion.pe/feed/',
-    'https://www.infobae.com/arc/outboundfeeds/rss/peru/',
-
-    # Venezuela
-    'https://www.infobae.com/arc/outboundfeeds/rss/america/venezuela/',
-    'https://www.lapatilla.com/feed/',
-    'https://www.elnacional.com/feed/',
-
-    # Ecuador
-    'https://www.elcomercio.com/rss/',
-    'https://www.eluniverso.com/rss/',
-    'https://www.infobae.com/arc/outboundfeeds/rss/america/ecuador/',
-
-    # Bolivia
-    'https://www.lostiempos.com/rss/ultimas-noticias.xml',
-    'https://www.eldeber.com.bo/rss/',
-    'https://www.opinion.com.bo/rss/',
-
-    # Uruguay
-    'https://www.elpais.com.uy/rss/',
-    'https://www.montevideo.com.uy/rss/',
-
-    # Paraguay
-    'https://www.ultimahora.com/rss/',
-    'https://www.abc.com.py/rss/',
+    'https://www.lacuarta.com/feed/',
+    'https://www.24horas.cl/rss/',
+    'https://www.cnnchile.com/feed/',
+    'https://www.meganoticias.cl/feed/',
+    'https://www.t13.cl/rss/',
+    'https://www.adnradio.cl/feed/',
+    'https://www.df.cl/feed/',                      # economía/finanzas
+    'https://www.eldinamo.cl/feed/',
+    'https://www.eldesconcierto.cl/feed/',
+    'https://www.publimetro.cl/feed/',
+    'https://www.lun.com/rss/',
+    'https://www.soychile.cl/feed/',
+    'https://www.elmostrador.cl/feed/',
+    'https://www.elciudadano.com/feed/',
+    'https://www.radiobio.cl/feed/',
+    'https://www.radiosantiago.cl/feed/',
 ]
 
-# NORTEAMÉRICA (30% de las noticias)
-FEEDS_NORTEAMERICA = [
-    # México
-    'https://www.reforma.com/rss/politica.xml',
-    'https://www.jornada.com.mx/rss/politica.xml',
-    'https://www.excelsior.com.mx/rss/politica.xml',
-    'https://www.eluniversal.com.mx/rss/politica.xml',
-    'https://www.milenio.com/rss/politica',
-    'https://www.infobae.com/arc/outboundfeeds/rss/mexico/',
-    'https://aristeguinoticias.com/feed/',
-    'https://www.animalpolitico.com/feed/',
-    'https://www.sinembargo.mx/feed/',
-
-    # EEUU - Latino
-    'https://www.univision.com/rss/news',
-    'https://www.telemundo.com/rss',
-    'https://www.lanacion.com.ar/rss/mundo.xml',
-    'https://www.infobae.com/arc/outboundfeeds/rss/america/estados-unidos/',
-
-    # Canadá
-    'https://www.theglobeandmail.com/feeds/rss/',
-    'https://www.cbc.ca/cmlink/rss-topstories',
+# ── PRIORIDAD 2: Medios regionales chilenos ──────────────────
+FEEDS_CHILE_REGIONAL = [
+    # Norte
+    'https://www.estrelladelnorte.cl/feed/',        # Iquique
+    'https://www.estrellaarica.cl/feed/',           # Arica
+    'https://www.mercurioantofagasta.cl/feed/',     # Antofagasta
+    'https://www.atacamahoy.cl/feed/',              # Atacama
+    # Centro-Norte
+    'https://www.diarioeldia.cl/feed/',             # La Serena
+    'https://www.mercuriovalpo.cl/feed/',           # Valparaíso
+    # Centro
+    'https://www.rancaguahoy.cl/feed/',             # Rancagua
+    'https://www.diariotalca.cl/feed/',             # Talca
+    # Sur
+    'https://www.biobiochile.cl/noticias/nacional/region-del-biobio/feed/',
+    'https://www.latercera.com/regional/biobio/feed/',
+    'https://www.diarioaustral.cl/feed/',           # Valdivia
+    'https://www.ellugarino.com/feed/',             # Los Lagos
+    'https://www.patagoniachile.cl/feed/',          # Aysén
+    'https://www.laprensaaustral.cl/feed/',         # Magallanes
+    # Araucanía (tema sensible, seguimiento especial)
+    'https://www.elperiodico.cl/feed/',
+    'https://www.ellibero.cl/feed/',
 ]
 
-# CENTROAMÉRICA Y CARIBE (20% de las noticias)
-FEEDS_CENTROAMERICA_CARIBE = [
-    # Centroamérica
-    'https://www.prensalibre.com/rss/',
-    'https://www.elsalvador.com/rss/',
-    'https://www.laprensa.hn/rss/',
-    'https://www.elnuevodiario.com.ni/rss/',
-    'https://www.nacion.com/rss/',
-    'https://www.prensa.com/rss/',
-
-    # Caribe
-    'https://www.elnuevoherald.com/rss/',
-    'https://www.diariolibre.com/rss/',
-    'https://listindiario.com/rss/',
-    'https://www.elcaribe.com.do/rss/',
-    'https://www.jamaicaobserver.com/rss/',
-    'https://www.cubanet.org/feed/',
-    'https://www.14ymedio.com/rss/',
-    'https://www.elnacional.com.do/rss/',
+# ── PRIORIDAD 3: Internacional con mención Chile ────────────
+FEEDS_INTERNACIONAL_CHILE = [
+    'https://www.infobae.com/arc/outboundfeeds/rss/america/chile/',
+    'https://www.lanacion.com.ar/rss/mundo.xml',    # Argentina cubre Chile
+    'https://www.bbc.com/mundo/topics/c3xnz37krqvt.rss',  # BBC Chile
+    'https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/america/portada',
+    'https://www.dw.com/es/rss/america-latina/s-3500',
+    'https://www.france24.com/es/rss',
+    'https://www.rtve.es/rss/noticias/internacional/',
 ]
 
-# Todos los feeds combinados
-TODOS_LOS_FEEDS = FEEDS_SUDAMERICA + FEEDS_NORTEAMERICA + FEEDS_CENTROAMERICA_CARIBE
+ALL_FEEDS_CHILE = FEEDS_CHILE_NACIONAL + FEEDS_CHILE_REGIONAL + FEEDS_INTERNACIONAL_CHILE
+
 
 # ═══════════════════════════════════════════════════════════════
-# FUENTES DE NOTICIAS
+# OBTENER NOTICIAS
 # ═══════════════════════════════════════════════════════════════
 
-def obtener_newsapi():
-    """Obtiene noticias de NewsAPI con queries ampliadas"""
-    if not NEWS_API_KEY:
-        return []
-
+def obtener_rss_chile(feeds, max_noticias=60):
+    """Obtiene noticias de feeds, filtra solo las de Chile"""
     noticias = []
+    urls_vistas = set()
 
-    # Queries ampliadas por categoría
-    queries = [
-        # Política
-        'Trump', 'Biden', 'AMLO', 'Milei', 'Petro', 'Maduro', 'Lula', 'Boric',
-        'golpe de estado', 'impeachment', 'elecciones', 'gobierno',
-
-        # Economía
-        'economía Latinoamérica', 'inflación', 'devaluación', 'FMI', 'crisis económica',
-
-        # Migración
-        'migración', 'migrantes', 'frontera', 'deportación', 'asilo',
-
-        # Narcotráfico
-        'cártel', 'narcotráfico', 'fentanilo', 'crimen organizado',
-
-        # Conflicto/Guerra
-        'guerra', 'conflicto', 'protestas', 'manifestaciones', 'disturbios',
-
-        # Tecnología
-        'inteligencia artificial', 'ciberseguridad', 'hackeo', 'ciberataque',
-
-        # Ciencia/Salud
-        'pandemia', 'vacuna', 'cambio climático', 'crisis climática',
-
-        # Corrupción
-        'corrupción', 'escándalo político', 'soborno', 'impunidad'
-    ]
-
-    for query in queries:
-        try:
-            r = requests.get('https://newsapi.org/v2/everything',
-                           params={
-                               'apiKey': NEWS_API_KEY,
-                               'q': query,
-                               'language': 'es',
-                               'sortBy': 'publishedAt',
-                               'pageSize': 3
-                           },
-                           timeout=10).json()
-
-            if r.get('status') == 'ok':
-                for art in r.get('articles', []):
-                    titulo = art.get('title', '')
-                    if titulo and '[Removed]' not in titulo:
-                        desc = limpiar_texto(art.get('description', ''))
-                        categoria = detectar_categoria(titulo, desc)
-
-                        noticias.append({
-                            'titulo': limpiar_texto(titulo),
-                            'descripcion': desc,
-                            'url': art.get('url', ''),
-                            'imagen': art.get('urlToImage'),
-                            'fuente': f"NewsAPI:{art.get('source', {}).get('name', 'Unknown')}",
-                            'fecha': art.get('publishedAt'),
-                            'categoria': categoria,
-                            'puntaje': calcular_puntaje_viral(titulo, desc),
-                            'region': detectar_region(titulo, desc)
-                        })
-        except Exception as e:
-            log(f"Error NewsAPI: {e}", 'error')
-            continue
-
-    log(f"NewsAPI: {len(noticias)} noticias", 'info')
-    return noticias
-
-def obtener_gnews():
-    """Obtiene noticias de GNews"""
-    if not GNEWS_API_KEY:
-        return []
-
-    noticias = []
-    topics = ['world', 'nation', 'business', 'technology']
-
-    for topic in topics:
-        try:
-            r = requests.get('https://gnews.io/api/v4/top-headlines',
-                           params={
-                               'apikey': GNEWS_API_KEY,
-                               'lang': 'es',
-                               'max': 5,
-                               'topic': topic
-                           },
-                           timeout=10).json()
-
-            for art in r.get('articles', []):
-                titulo = art.get('title', '')
-                if titulo:
-                    desc = limpiar_texto(art.get('description', ''))
-                    categoria = detectar_categoria(titulo, desc)
-
-                    noticias.append({
-                        'titulo': limpiar_texto(titulo),
-                        'descripcion': desc,
-                        'url': art.get('url', ''),
-                        'imagen': art.get('image'),
-                        'fuente': f"GNews:{art.get('source', {}).get('name', 'Unknown')}",
-                        'fecha': art.get('publishedAt'),
-                        'categoria': categoria,
-                        'puntaje': calcular_puntaje_viral(titulo, desc),
-                        'region': detectar_region(titulo, desc)
-                    })
-        except Exception as e:
-            log(f"Error GNews: {e}", 'error')
-            continue
-
-    log(f"GNews: {len(noticias)} noticias", 'info')
-    return noticias
-
-def detectar_region(titulo, descripcion):
-    """Detecta la región de la noticia para balancear distribución"""
-    texto = f"{titulo} {descripcion}".lower()
-
-    # Sudamérica
-    sudamerica = ['argentina', 'chile', 'brasil', 'colombia', 'perú', 'peru', 
-                  'venezuela', 'ecuador', 'bolivia', 'paraguay', 'uruguay', 
-                  'guyana', 'surinam', 'suriname']
-
-    # Norteamérica
-    norteamerica = ['mexico', 'méxico', 'estados unidos', 'eeuu', 'usa', 'canada', 'canadá']
-
-    # Centroamérica y Caribe
-    centroamerica = ['guatemala', 'el salvador', 'honduras', 'nicaragua', 
-                     'costa rica', 'panama', 'panamá', 'cuba', 'república dominicana',
-                     'dominicana', 'puerto rico', 'haití', 'haiti', 'jamaica',
-                     'trinidad', 'tobago', 'bahamas', 'barbados', 'belice', 'belize']
-
-    for pais in sudamerica:
-        if pais in texto:
-            return 'sudamerica'
-
-    for pais in norteamerica:
-        if pais in texto:
-            return 'norteamerica'
-
-    for pais in centroamerica:
-        if pais in texto:
-            return 'centroamerica'
-
-    return 'desconocida'
-
-def obtener_rss_por_region(region_feeds, max_noticias=15):
-    """Obtiene noticias de feeds RSS de una región específica"""
-    noticias = []
-
-    for feed_url in region_feeds:
+    for feed_url in feeds:
         try:
             r = requests.get(feed_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
             if r.status_code != 200:
                 continue
-
             feed = feedparser.parse(r.content)
             if not feed or not feed.entries:
                 continue
 
-            fuente = feed.feed.get('title', 'RSS')[:20]
+            fuente = feed.feed.get('title', feed_url.split('/')[2])[:30]
+            es_fuente_cl = '.cl' in feed_url
 
-            for entry in feed.entries[:3]:  # Máximo 3 por feed
-                titulo = entry.get('title', '')
-                if not titulo:
+            for entry in feed.entries[:5]:
+                titulo = limpiar_texto(entry.get('title', ''))
+                if not titulo or es_titulo_generico(titulo):
                     continue
 
                 link = entry.get('link', '')
-                if not link:
+                if not link or normalizar_url(link) in urls_vistas:
                     continue
 
-                desc = entry.get('summary', '') or entry.get('description', '')
-                desc = re.sub(r'<[^>]+>', '', desc)
+                desc = limpiar_texto(
+                    entry.get('summary', '') or entry.get('description', '')
+                )
+
+                # Filtro Chile
+                es_chile, nivel = es_noticia_chile(titulo, desc, fuente)
+                if not es_chile:
+                    # Si la fuente es internacional, descartar sin mención a Chile
+                    if not es_fuente_cl:
+                        continue
+                    # Si es fuente .cl y no menciona Chile explícitamente, asumimos que es Chile
+                    nivel = 'directo'
 
                 # Buscar imagen
                 imagen = None
-                if 'media_content' in entry:
-                    imagen = entry.media_content[0].get('url')
-                elif 'links' in entry:
-                    for link_data in entry.links:
-                        if link_data.get('type', '').startswith('image/'):
-                            imagen = link_data.get('href')
+                for campo in ['media_content', 'media_thumbnail', 'links']:
+                    if campo == 'media_content' and hasattr(entry, 'media_content'):
+                        imgs = entry.get('media_content', [])
+                        if imgs:
+                            imagen = imgs[0].get('url')
+                            break
+                    elif campo == 'media_thumbnail' and hasattr(entry, 'media_thumbnail'):
+                        imgs = entry.get('media_thumbnail', [])
+                        if imgs:
+                            imagen = imgs[0].get('url')
+                            break
+                    elif campo == 'links':
+                        for lk in entry.get('links', []):
+                            if lk.get('type', '').startswith('image/'):
+                                imagen = lk.get('href')
+                                break
+
+                # Algunos feeds incluyen imagen en enclosures
+                if not imagen:
+                    for enc in entry.get('enclosures', []):
+                        if enc.get('type', '').startswith('image/'):
+                            imagen = enc.get('href') or enc.get('url')
                             break
 
                 categoria = detectar_categoria(titulo, desc)
+                tiene_imagen = bool(imagen)
 
                 noticias.append({
-                    'titulo': limpiar_texto(titulo),
-                    'descripcion': limpiar_texto(desc),
-                    'url': link,
-                    'imagen': imagen,
-                    'fuente': f"RSS:{fuente}",
-                    'fecha': entry.get('published'),
-                    'categoria': categoria,
-                    'puntaje': calcular_puntaje_viral(titulo, desc),
-                    'region': detectar_region(titulo, desc)
+                    'titulo':      titulo,
+                    'descripcion': desc,
+                    'url':         link,
+                    'imagen':      imagen,
+                    'tiene_imagen': tiene_imagen,
+                    'fuente':      f"RSS:{fuente}",
+                    'fecha':       entry.get('published', ''),
+                    'categoria':   categoria,
+                    'nivel_chile': nivel,
+                    'puntaje':     calcular_puntaje_viral(
+                                       titulo, desc,
+                                       tiene_imagen=tiene_imagen,
+                                       fuente=fuente,
+                                       nivel_chile=nivel
+                                   ),
                 })
+                urls_vistas.add(normalizar_url(link))
 
                 if len(noticias) >= max_noticias:
-                    break
+                    return noticias
 
         except Exception as e:
             log(f"Error RSS {feed_url[:50]}: {e}", 'error')
@@ -967,98 +1020,277 @@ def obtener_rss_por_region(region_feeds, max_noticias=15):
 
     return noticias
 
-def obtener_rss():
-    """Obtiene noticias de feeds RSS con distribución geográfica balanceada"""
+
+def obtener_newsapi_chile():
+    """Obtiene noticias de NewsAPI filtradas a Chile"""
+    if not NEWS_API_KEY:
+        return []
+
     noticias = []
+    queries_chile = [
+        'Chile Boric gobierno',
+        'Chile economía inflación dólar',
+        'Chile crimen delincuencia seguridad',
+        'Chile terremoto tsunami emergencia',
+        'Chile protestas manifestaciones',
+        'Santiago noticias hoy',
+        'Chile política senado diputados',
+        'Chile deporte selección fútbol',
+        'Chile salud hospital minsal',
+        'Chile minería litio cobre',
+        'Chile educación universidades',
+        'Araucanía conflicto mapuche',
+        'Chile medioambiente incendio',
+    ]
 
-    # 50% Sudamérica
-    log("Obteniendo RSS Sudamérica...", 'info')
-    noticias_sudamerica = obtener_rss_por_region(FEEDS_SUDAMERICA, max_noticias=25)
-    noticias.extend(noticias_sudamerica)
-    log(f"RSS Sudamérica: {len(noticias_sudamerica)} noticias", 'info')
+    for query in queries_chile:
+        try:
+            r = requests.get(
+                'https://newsapi.org/v2/everything',
+                params={
+                    'apiKey':   NEWS_API_KEY,
+                    'q':        query,
+                    'language': 'es',
+                    'sortBy':   'publishedAt',
+                    'pageSize': 5,
+                },
+                timeout=10
+            ).json()
 
-    # 30% Norteamérica
-    log("Obteniendo RSS Norteamérica...", 'info')
-    noticias_norteamerica = obtener_rss_por_region(FEEDS_NORTEAMERICA, max_noticias=15)
-    noticias.extend(noticias_norteamerica)
-    log(f"RSS Norteamérica: {len(noticias_norteamerica)} noticias", 'info')
+            if r.get('status') != 'ok':
+                continue
 
-    # 20% Centroamérica y Caribe
-    log("Obteniendo RSS Centroamérica/Caribe...", 'info')
-    noticias_centroamerica = obtener_rss_por_region(FEEDS_CENTROAMERICA_CARIBE, max_noticias=10)
-    noticias.extend(noticias_centroamerica)
-    log(f"RSS Centroamérica/Caribe: {len(noticias_centroamerica)} noticias", 'info')
+            for art in r.get('articles', []):
+                titulo = limpiar_texto(art.get('title', ''))
+                if not titulo or '[Removed]' in titulo:
+                    continue
 
-    log(f"RSS Total: {len(noticias)} noticias", 'info')
+                desc = limpiar_texto(art.get('description', ''))
+                imagen = art.get('urlToImage')
+
+                es_chile, nivel = es_noticia_chile(titulo, desc)
+                if not es_chile:
+                    continue
+
+                categoria = detectar_categoria(titulo, desc)
+                tiene_imagen = bool(imagen)
+
+                noticias.append({
+                    'titulo':       titulo,
+                    'descripcion':  desc,
+                    'url':          art.get('url', ''),
+                    'imagen':       imagen,
+                    'tiene_imagen': tiene_imagen,
+                    'fuente':       f"NewsAPI:{art.get('source', {}).get('name', '')}",
+                    'fecha':        art.get('publishedAt', ''),
+                    'categoria':    categoria,
+                    'nivel_chile':  nivel,
+                    'puntaje':      calcular_puntaje_viral(
+                                        titulo, desc,
+                                        tiene_imagen=tiene_imagen,
+                                        nivel_chile=nivel
+                                    ),
+                })
+        except Exception as e:
+            log(f"Error NewsAPI query '{query}': {e}", 'error')
+
+    log(f"NewsAPI Chile: {len(noticias)} noticias", 'info')
     return noticias
+
+
+def obtener_gnews_chile():
+    """Obtiene noticias de GNews filtradas a Chile"""
+    if not GNEWS_API_KEY:
+        return []
+
+    noticias = []
+    try:
+        r = requests.get(
+            'https://gnews.io/api/v4/top-headlines',
+            params={
+                'apikey':   GNEWS_API_KEY,
+                'lang':     'es',
+                'country':  'cl',
+                'max':      10,
+            },
+            timeout=10
+        ).json()
+
+        for art in r.get('articles', []):
+            titulo = limpiar_texto(art.get('title', ''))
+            if not titulo:
+                continue
+            desc    = limpiar_texto(art.get('description', ''))
+            imagen  = art.get('image')
+            es_chile, nivel = es_noticia_chile(titulo, desc)
+            if not es_chile:
+                nivel = 'directo'   # GNews ya filtra por country=cl
+
+            categoria   = detectar_categoria(titulo, desc)
+            tiene_imagen = bool(imagen)
+
+            noticias.append({
+                'titulo':       titulo,
+                'descripcion':  desc,
+                'url':          art.get('url', ''),
+                'imagen':       imagen,
+                'tiene_imagen': tiene_imagen,
+                'fuente':       f"GNews:{art.get('source', {}).get('name', '')}",
+                'fecha':        art.get('publishedAt', ''),
+                'categoria':    categoria,
+                'nivel_chile':  nivel,
+                'puntaje':      calcular_puntaje_viral(
+                                    titulo, desc,
+                                    tiene_imagen=tiene_imagen,
+                                    nivel_chile=nivel
+                                ),
+            })
+    except Exception as e:
+        log(f"Error GNews: {e}", 'error')
+
+    log(f"GNews Chile: {len(noticias)} noticias", 'info')
+    return noticias
+
+
+# ═══════════════════════════════════════════════════════════════
+# VERIFICACIÓN DE FUENTE
+# ═══════════════════════════════════════════════════════════════
+
+# Mapa de prefijos de fuente → nombre legible + ícono de verificación
+FUENTES_VERIFICACION = {
+    # APIs externas
+    'newsapi':    ('Google News',    '🔵'),
+    'gnews':      ('GNews',          '🟢'),
+    'newsdata':   ('NewsData.io',    '🟡'),
+    # Medios nacionales chilenos reconocibles
+    'emol':       ('Emol',           '✅'),
+    'latercera':  ('La Tercera',     '✅'),
+    'biobio':     ('BioBío Chile',   '✅'),
+    'cooperativa':('Cooperativa',    '✅'),
+    'cnnchile':   ('CNN Chile',      '✅'),
+    't13':        ('T13',            '✅'),
+    '24horas':    ('24 Horas',       '✅'),
+    'meganoticias':('Meganoticias',  '✅'),
+    'df':         ('Diario Financiero','✅'),
+    'elmostrador':('El Mostrador',   '✅'),
+    'lacuarta':   ('La Cuarta',      '✅'),
+    'lun':        ('Las Últimas Noticias','✅'),
+    'adnradio':   ('ADN Radio',      '✅'),
+    'eldinamo':   ('El Dínamo',      '✅'),
+    'publimetro': ('Publimetro',     '✅'),
+    'eldesconcierto':('El Desconcierto','✅'),
+    # Medios internacionales con sección Chile
+    'infobae':    ('Infobae',        '🔵'),
+    'bbc':        ('BBC Mundo',      '🔵'),
+    'elpais':     ('El País',        '🔵'),
+    'france24':   ('France 24',      '🔵'),
+    'dw':         ('DW Español',     '🔵'),
+}
+
+def formatear_fuente_verificacion(fuente_raw, url=''):
+    """
+    Recibe el campo 'fuente' de la noticia (ej: 'RSS:Emol', 'NewsAPI:El Mostrador')
+    y retorna una línea de verificación formateada para el post de Facebook.
+    """
+    fuente_lower = fuente_raw.lower()
+    url_lower    = url.lower()
+
+    # Buscar coincidencia en el mapa
+    for clave, (nombre, icono) in FUENTES_VERIFICACION.items():
+        if clave in fuente_lower or clave in url_lower:
+            # Distinguir entre API de agregación y medio original
+            if fuente_lower.startswith('newsapi:'):
+                medio = fuente_raw.split(':', 1)[-1].strip() or nombre
+                return f"🔵 Noticia indexada por Google News · Fuente original: {medio}"
+            elif fuente_lower.startswith('gnews:'):
+                medio = fuente_raw.split(':', 1)[-1].strip() or nombre
+                return f"🟢 Verificado por GNews · Fuente original: {medio}"
+            elif fuente_lower.startswith('newsdata:'):
+                medio = fuente_raw.split(':', 1)[-1].strip() or nombre
+                return f"🟡 Verificado por NewsData.io · Fuente original: {medio}"
+            else:
+                # RSS directo del medio
+                return f"{icono} Fuente verificada: {nombre}"
+
+    # Fuente RSS genérica: extraer el nombre del medio del campo fuente
+    if ':' in fuente_raw:
+        nombre_medio = fuente_raw.split(':', 1)[-1].strip()
+    else:
+        nombre_medio = fuente_raw.strip()
+
+    if nombre_medio:
+        return f"📰 Fuente: {nombre_medio}"
+
+    return "📰 Fuente periodística verificada"
+
 
 # ═══════════════════════════════════════════════════════════════
 # PUBLICACIÓN FACEBOOK
 # ═══════════════════════════════════════════════════════════════
 
-def publicar_facebook(titulo, texto, imagen_path, hashtags):
-    """Publica en Facebook"""
-    log(f"Iniciando publicación Facebook...", 'info')
-    log(f"Page ID: {FB_PAGE_ID}", 'debug')
-    log(f"Token configurado: {'Sí' if FB_ACCESS_TOKEN else 'No'}", 'debug')
-    log(f"Imagen: {imagen_path}", 'debug')
-
+def publicar_facebook(titulo, descripcion, imagen_path, hashtags, cta, fuente='', url=''):
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("ERROR: Faltan credenciales Facebook", 'error')
+        log("Faltan credenciales Facebook", 'error')
         return False
-
     if not imagen_path or not os.path.exists(imagen_path):
-        log("ERROR: No hay imagen para publicar", 'error')
+        log("Sin imagen para publicar", 'error')
         return False
 
-    mensaje = f"{texto}\n\n{hashtags}\n\nNoticias Virales LATAM 24/7"
+    # Línea de verificación de fuente
+    linea_fuente = formatear_fuente_verificacion(fuente, url)
+
+    # Construir mensaje con CTA poderoso
+    desc_corta = descripcion[:260] + '…' if len(descripcion) > 260 else descripcion
+
+    mensaje = (
+        f"🔴 {titulo}\n\n"
+        f"{desc_corta}\n\n"
+        f"{'─' * 30}\n"
+        f"{linea_fuente}\n"
+        f"{'─' * 30}\n"
+        f"{cta}\n\n"
+        f"{hashtags}\n\n"
+        f"📰 Verdad Hoy — Noticias Chile 🇨🇱"
+    )
 
     if len(mensaje) > 2200:
-        mensaje = mensaje[:2100] + "..."
+        mensaje = mensaje[:2100] + '…'
 
     try:
         url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
-
         with open(imagen_path, 'rb') as f:
-            files = {'file': ('imagen.jpg', f, 'image/jpeg')}
-            data = {
-                'message': mensaje,
-                'access_token': FB_ACCESS_TOKEN,
-                'published': 'true'
-            }
-
-            log("Enviando POST a Facebook...", 'info')
-            response = requests.post(url, files=files, data=data, timeout=60)
-
-            log(f"Respuesta HTTP: {response.status_code}", 'info')
-            log(f"Respuesta: {response.text[:300]}", 'debug')
-
-            resultado = response.json()
-
-            if 'id' in resultado:
-                log(f"✓ Publicado ID: {resultado['id']}", 'exito')
-                return True
-            else:
-                error = resultado.get('error', {})
-                log(f"✗ Error: {error.get('message', 'Desconocido')}", 'error')
-                log(f"  Código: {error.get('code', 'N/A')}", 'error')
-                return False
-
+            r = requests.post(
+                url,
+                files={'file': ('imagen.jpg', f, 'image/jpeg')},
+                data={
+                    'message':      mensaje,
+                    'access_token': FB_ACCESS_TOKEN,
+                    'published':    'true',
+                },
+                timeout=60
+            )
+        resultado = r.json()
+        if 'id' in resultado:
+            log(f"Publicado OK — ID: {resultado['id']}", 'exito')
+            return True
+        else:
+            error = resultado.get('error', {})
+            log(f"Error FB: {error.get('message','?')} (código {error.get('code','?')})", 'error')
+            return False
     except Exception as e:
-        log(f"✗ Excepción: {e}", 'error')
-        import traceback
-        traceback.print_exc()
+        log(f"Excepción FB: {e}", 'error')
         return False
 
+
 # ═══════════════════════════════════════════════════════════════
-# MAIN
+# CONTROL DE TIEMPO
 # ═══════════════════════════════════════════════════════════════
 
 def verificar_tiempo():
-    """Verifica tiempo entre publicaciones"""
     estado = cargar_json(ESTADO_PATH, {'ultima_publicacion': None})
     ultima = estado.get('ultima_publicacion')
 
+    # En GitHub Actions siempre publicar (el workflow controla el cron)
     if os.getenv('GITHUB_RUN_NUMBER'):
         return True
 
@@ -1066,144 +1298,163 @@ def verificar_tiempo():
         return True
 
     try:
-        ultima_dt = datetime.fromisoformat(ultima)
-        minutos = (datetime.now() - ultima_dt).total_seconds() / 60
-        if minutos < TIEMPO_ENTRE_PUBLICACIONES:
-            log(f"Esperando... Última hace {minutos:.0f} min", 'info')
+        dt = datetime.fromisoformat(ultima)
+        mins = (datetime.now() - dt).total_seconds() / 60
+        if mins < TIEMPO_ENTRE_PUBLICACIONES:
+            log(f"Última publicación hace {mins:.0f} min — esperando", 'info')
             return False
     except:
         pass
-
     return True
 
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════
+
 def main():
-    print("\n" + "=" * 60)
-    print("BOT NOTICIAS VIRALES LATAM 24/7 - V5.0")
-    print("Distribución: 50% Sudamérica | 30% Norteamérica | 20% Centroamérica/Caribe")
-    print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+    print("\n" + "=" * 65)
+    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V6.0")
+    print("  Noticias nacionales + internacionales relacionadas con Chile")
+    print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 65)
 
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("ERROR: Faltan credenciales Facebook", 'error')
-        log("Configura las variables de entorno:", 'error')
-        log("  export FB_PAGE_ID='tu_page_id'", 'error')
-        log("  export FB_ACCESS_TOKEN='tu_token'", 'error')
+        log("Faltan credenciales Facebook (FB_PAGE_ID / FB_ACCESS_TOKEN)", 'error')
         return False
 
     if not verificar_tiempo():
         return True
 
     historial = cargar_historial()
-    log(f"Historial: {len(historial.get('urls', []))} URLs", 'info')
+    log(f"Historial: {len(historial.get('urls', []))} URLs publicadas", 'info')
 
-    # Obtener noticias de todas las fuentes
+    # ── Recolectar noticias ───────────────────────────────────
     noticias = []
 
-    if NEWS_API_KEY:
-        noticias.extend(obtener_newsapi())
-    if GNEWS_API_KEY:
-        noticias.extend(obtener_gnews())
+    # 1. RSS Chile (fuente principal)
+    log("Obteniendo RSS Chile nacional...", 'info')
+    rss_nac = obtener_rss_chile(FEEDS_CHILE_NACIONAL, max_noticias=50)
+    noticias.extend(rss_nac)
+    log(f"RSS nacional: {len(rss_nac)}", 'info')
 
-    # Siempre obtener RSS (nuestra principal fuente ahora)
-    noticias_rss = obtener_rss()
-    noticias.extend(noticias_rss)
+    log("Obteniendo RSS Chile regional...", 'info')
+    rss_reg = obtener_rss_chile(FEEDS_CHILE_REGIONAL, max_noticias=30)
+    noticias.extend(rss_reg)
+    log(f"RSS regional: {len(rss_reg)}", 'info')
+
+    log("Obteniendo RSS internacional con mención Chile...", 'info')
+    rss_int = obtener_rss_chile(FEEDS_INTERNACIONAL_CHILE, max_noticias=20)
+    noticias.extend(rss_int)
+    log(f"RSS internacional: {len(rss_int)}", 'info')
+
+    # 2. APIs (complemento)
+    if NEWS_API_KEY:
+        noticias.extend(obtener_newsapi_chile())
+    if GNEWS_API_KEY:
+        noticias.extend(obtener_gnews_chile())
 
     if not noticias:
         log("No se encontraron noticias", 'error')
         return False
 
-    log(f"Total noticias: {len(noticias)}", 'info')
+    log(f"Total noticias recolectadas: {len(noticias)}", 'info')
 
-    # Filtrar duplicados
+    # ── Filtrar duplicadas ────────────────────────────────────
     noticias_unicas = []
-    urls_vistas = set()
+    urls_vistas     = set()
 
     for n in noticias:
         url_norm = normalizar_url(n.get('url', ''))
         if url_norm in urls_vistas:
             continue
-
         duplicada, razon = noticia_ya_publicada(historial, n['url'], n['titulo'])
         if duplicada:
-            log(f"Duplicada ({razon}): {n['titulo'][:40]}...", 'debug')
             continue
-
         urls_vistas.add(url_norm)
         noticias_unicas.append(n)
+
+    log(f"Noticias únicas disponibles: {len(noticias_unicas)}", 'info')
 
     if not noticias_unicas:
         log("Todas las noticias ya fueron publicadas", 'advertencia')
         return False
 
-    # Balancear por región si es posible
-    por_region = {'sudamerica': [], 'norteamerica': [], 'centroamerica': [], 'desconocida': []}
-    for n in noticias_unicas:
-        region = n.get('region', 'desconocida')
-        por_region[region].append(n)
+    # ── Separar por imagen / sin imagen ──────────────────────
+    con_imagen    = [n for n in noticias_unicas if n.get('tiene_imagen')]
+    sin_imagen    = [n for n in noticias_unicas if not n.get('tiene_imagen')]
 
-    log(f"Distribución: Sudamérica={len(por_region['sudamerica'])}, "
-        f"Norteamérica={len(por_region['norteamerica'])}, "
-        f"Centroamérica={len(por_region['centroamerica'])}", 'info')
+    log(f"Con imagen: {len(con_imagen)} | Sin imagen: {len(sin_imagen)}", 'info')
 
-    # Ordenar por puntaje viral
-    noticias_unicas.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
+    # Ordenar ambas listas por puntaje
+    con_imagen.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
+    sin_imagen.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
 
-    # Seleccionar mejor noticia
-    seleccionada = noticias_unicas[0]
-    categoria = seleccionada.get('categoria', 'default')
-    region = seleccionada.get('region', 'desconocida')
+    # Priorizar siempre noticias con imagen
+    candidatas = con_imagen + sin_imagen
 
-    log(f"Seleccionada: {seleccionada['titulo'][:60]}...", 'info')
-    log(f"Categoría: {categoria} | Región: {region} | Puntaje: {seleccionada.get('puntaje', 0)}", 'info')
+    # ── Seleccionar la mejor noticia ─────────────────────────
+    seleccionada = candidatas[0]
+    categoria    = seleccionada.get('categoria', 'default')
+    nivel_chile  = seleccionada.get('nivel_chile', 'directo')
 
-    # PROCESAR IMAGEN
+    log(f"Seleccionada: {seleccionada['titulo'][:70]}", 'info')
+    log(f"Categoría: {categoria} | Nivel Chile: {nivel_chile} | "
+        f"Puntaje: {seleccionada.get('puntaje',0)} | "
+        f"Imagen: {'SÍ' if seleccionada.get('tiene_imagen') else 'NO'}", 'info')
+
+    # ── Procesar imagen ───────────────────────────────────────
     imagen_path, tipo_imagen = procesar_imagen(seleccionada)
+    if not imagen_path:
+        log("No se pudo crear imagen, abortando", 'error')
+        return False
     log(f"Tipo imagen: {tipo_imagen}", 'imagen')
 
-    if not imagen_path:
-        log("No se pudo crear imagen", 'error')
-        return False
+    # ── Preparar contenido ────────────────────────────────────
+    hashtags = generar_hashtags(
+        seleccionada['titulo'],
+        seleccionada.get('descripcion', ''),
+        categoria
+    )
+    cta = obtener_cta(categoria, seleccionada['titulo'])
 
-    # Preparar texto
-    contenido = seleccionada.get('descripcion', '')
-    if len(contenido) > 300:
-        contenido = contenido[:297] + "..."
-
-    publicacion = f"{seleccionada['titulo']}\n\n{contenido}\n\nFuente: {seleccionada['fuente']}"
-
-    # Generar hashtags automáticos
-    hashtags = generar_hashtags(seleccionada['titulo'], seleccionada.get('descripcion', ''), categoria)
     log(f"Hashtags: {hashtags}", 'info')
+    log(f"CTA: {cta}", 'info')
 
-    # Publicar
-    exito = publicar_facebook(seleccionada['titulo'], publicacion, imagen_path, hashtags)
+    # ── Publicar ──────────────────────────────────────────────
+    exito = publicar_facebook(
+        titulo      = seleccionada['titulo'],
+        descripcion = seleccionada.get('descripcion', ''),
+        imagen_path = imagen_path,
+        hashtags    = hashtags,
+        cta         = cta,
+        fuente      = seleccionada.get('fuente', ''),
+        url         = seleccionada.get('url', ''),
+    )
 
-    # Limpiar
+    # Limpiar imagen temporal
     try:
         if os.path.exists(imagen_path):
             os.remove(imagen_path)
-            log("Imagen temporal eliminada", 'debug')
     except:
         pass
 
     if exito:
-        guardar_historial(historial, seleccionada['url'], seleccionada['titulo'],
-                         seleccionada.get('descripcion', ''))
-
-        estado = {
+        guardar_historial(historial, seleccionada['url'], seleccionada['titulo'])
+        guardar_json(ESTADO_PATH, {
             'ultima_publicacion': datetime.now().isoformat(),
-            'ultima_noticia': seleccionada['titulo'][:50],
-            'ultima_categoria': categoria,
-            'ultima_region': region
-        }
-        guardar_json(ESTADO_PATH, estado)
-
+            'ultima_noticia':     seleccionada['titulo'][:60],
+            'ultima_categoria':   categoria,
+            'nivel_chile':        nivel_chile,
+            'tenia_imagen':       seleccionada.get('tiene_imagen', False),
+        })
         total = historial.get('estadisticas', {}).get('total_publicadas', 0)
-        log(f"✓ ÉXITO - Total publicadas: {total}", 'exito')
+        log(f"ÉXITO — Total publicadas: {total}", 'exito')
         return True
     else:
-        log("✗ PUBLICACIÓN FALLIDA", 'error')
+        log("PUBLICACIÓN FALLIDA", 'error')
         return False
+
 
 if __name__ == "__main__":
     try:
