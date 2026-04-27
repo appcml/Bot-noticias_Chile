@@ -1,55 +1,107 @@
-name: Bot Noticias Virales - 60min Scheduler
+name: Verdad Hoy — Bot Noticias Chile 30min
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    # Cada 30 minutos las 24 horas
+    - cron: '0,30 * * * *'
   workflow_dispatch:
+    inputs:
+      forzar_publicacion:
+        description: 'Forzar publicación ignorando tiempo de espera'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# Evita ejecuciones simultáneas que corrompan el historial
+concurrency:
+  group: bot-noticias-chile
+  cancel-in-progress: false
 
 env:
   PYTHON_VERSION: '3.11'
-  FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-  FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-  NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-  NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
-  GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
-  HISTORIAL_PATH: data/historial_viral.json
-  ESTADO_PATH: data/estado_bot_viral.json
+  # Credenciales Facebook
+  FB_PAGE_ID:        ${{ secrets.FB_PAGE_ID }}
+  FB_ACCESS_TOKEN:   ${{ secrets.FB_ACCESS_TOKEN }}
+  # APIs de noticias (opcionales — el bot funciona solo con RSS si no están)
+  NEWS_API_KEY:      ${{ secrets.NEWS_API_KEY }}
+  NEWSDATA_API_KEY:  ${{ secrets.NEWSDATA_API_KEY }}
+  GNEWS_API_KEY:     ${{ secrets.GNEWS_API_KEY }}
+  # Rutas de datos — actualizadas al nuevo nombre
+  HISTORIAL_PATH:    data/historial_chile.json
+  ESTADO_PATH:       data/estado_bot_chile.json
 
 jobs:
-  bot-viral:
+  bot-chile:
+    name: Publicar noticia Chile
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout codigo
+      # ── 1. Código fuente ───────────────────────────────────
+      - name: Checkout código
         uses: actions/checkout@v4
-      
-      - name: Setup Python
+
+      # ── 2. Python ──────────────────────────────────────────
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-      
+          cache: pip
+
+      # ── 3. Dependencias ────────────────────────────────────
       - name: Instalar dependencias
         run: |
-          pip install requests feedparser beautifulsoup4 Pillow
-      
+          pip install --upgrade pip
+          pip install requests feedparser beautifulsoup4 Pillow lxml
+
+      # ── 4. Directorios ─────────────────────────────────────
       - name: Preparar directorios
         run: mkdir -p data logs
-      
+
+      # ── 5. Restaurar historial cacheado ────────────────────
+      # Usa restore-keys en cascada para siempre tener un historial base
       - name: Restaurar historial
         uses: actions/cache/restore@v4
         with:
           path: data/
-          key: bot-historial-${{ github.run_id }}
-          restore-keys: bot-historial-
-      
-      - name: Ejecutar Bot
-        run: python bot_noticias_virales.py
-      
+          key: historial-chile-${{ github.run_id }}
+          restore-keys: |
+            historial-chile-
+
+      # ── 6. Ejecutar bot ────────────────────────────────────
+      - name: Ejecutar bot
+        id: bot
+        run: |
+          python main.py 2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      # ── 7. Guardar historial siempre (éxito o fallo) ───────
       - name: Guardar historial
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/
-          key: bot-historial-${{ github.run_id }}-${{ github.run_attempt }}
+          key: historial-chile-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ── 8. Subir logs como artefacto ───────────────────────
+      - name: Subir logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
+
+      # ── 9. Notificar si el bot falla ───────────────────────
+      - name: Verificar resultado
+        if: always()
+        run: |
+          if [ "${{ steps.bot.outputs.exit_code }}" != "0" ]; then
+            echo "⚠️ El bot terminó con error. Revisar logs del artefacto."
+            exit 1
+          else
+            echo "✅ Bot ejecutado correctamente."
+          fi
