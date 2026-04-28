@@ -69,13 +69,44 @@ HORARIOS_PICO_UTC = [
     (time(0,  0), time(2,  0)),
 ]
 
-# ── Voces edge-tts en español latino ─────────────────────────
+# ── Voces edge-tts — Chile primero, luego variantes latino ──
 VOCES_TTS = [
-    'es-MX-DaliaNeural',    # presentadora mexicana, cálida
-    'es-MX-JorgeNeural',    # conductor mexicano, serio
-    'es-CO-SalomeNeural',   # presentadora colombiana, dinámica
-    'es-AR-ElenaNeural',    # presentadora argentina, expresiva
+    'es-CL-CatalinaNeural',  # presentadora chilena nativa ← principal
+    'es-CL-LorenzoNeural',   # conductor chileno nativo
+    'es-MX-DaliaNeural',     # presentadora mexicana (backup)
+    'es-CO-SalomeNeural',    # presentadora colombiana (backup)
 ]
+
+# Siglas chilenas comunes → pronunciación fonética para TTS
+SIGLAS_PRONUNCIACION = {
+    'SHOA':    'Shoa',          # Servicio Hidrográfico
+    'ONEMI':   'Onemi',
+    'SENAPRED':'Senapred',
+    'CONAF':   'Conaf',
+    'MINSAL':  'Minsal',
+    'SEREMI':  'Seremi',
+    'PDI':     'Pe De I',
+    'SII':     'S I I',
+    'AFP':     'A F P',
+    'CAE':     'C A E',
+    'PAES':    'Paes',
+    'SIMCE':   'Simce',
+    'ENAP':    'Enap',
+    'LATAM':   'Látam',
+    'PIB':     'P I B',
+    'IPC':     'I P C',
+    'TVN':     'T V N',
+    'CNN':     'C N N',
+    'CHV':     'C H V',
+    'CONAF':   'Conaf',
+    'FONASA':  'Fonasa',
+    'ISAPRE':  'Isapre',
+    'ONU':     'O N U',
+    'EEUU':    'Estados Unidos',
+    'EE.UU.':  'Estados Unidos',
+    'VIF':     'V I F',
+    'RSH':     'R S H',
+}
 
 TIEMPO_ENTRE_PUBLICACIONES = 28          # minutos (un poco menos de 30 para margen)
 MAX_TITULOS_HISTORIA       = 500
@@ -807,7 +838,7 @@ def formatear_parrafos(texto, max_chars=1400):
 
     # Si ya tiene párrafos (del scraping), limpiar y respetar
     if '\n\n' in texto:
-        parrafos = [p.strip() for p in texto.split('\n\n') if p.strip()]
+        parrafos = [p.strip() for p in texto.split('\n\n') if p.strip()][:40]
     else:
         # Texto plano: dividir en oraciones y agrupar de 2 en 2
         oraciones = re.split(r'(?<=[.!?])\s+', texto.strip())
@@ -953,10 +984,21 @@ def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_ch
 # ═══════════════════════════════════════════════════════════════
 
 def _limpiar_para_voz(texto):
-    """Elimina emojis y caracteres especiales antes de pasarlos a TTS"""
-    texto = re.sub(r'[\U00010000-\U0010ffff]', '', texto)   # emojis
-    texto = re.sub(r'[🇦-🇿]{2}', '', texto)                  # banderas
+    """
+    Prepara el texto para TTS:
+    - Reemplaza siglas chilenas por su pronunciación fonética
+    - Elimina emojis, hashtags y caracteres no pronunciables
+    """
+    if not texto:
+        return ''
+    # Reemplazar siglas por pronunciación (word boundary para no tocar palabras dentro)
+    for sigla, fonetica in SIGLAS_PRONUNCIACION.items():
+        texto = re.sub(rf'\b{re.escape(sigla)}\b', fonetica, texto)
+    # Limpiar emojis y símbolos
+    texto = re.sub(r'[\U00010000-\U0010ffff]', '', texto)
+    texto = re.sub(r'[🇦-🇿]{2}', '', texto)
     texto = re.sub(r'[#@]', '', texto)
+    texto = re.sub(r'[─═]', '', texto)           # separadores
     texto = re.sub(r'\s+', ' ', texto).strip()
     return texto
 
@@ -1948,7 +1990,7 @@ def publicar_facebook(titulo, descripcion, imagen_path, hashtags, cta, fuente=''
     # descripcion ya viene procesada por obtener_descripcion_completa()
     # Solo ajustamos si el mensaje total excede el límite de Facebook (63.206 chars,
     # pero para posts de foto el límite práctico es ~2.200)
-    MAX_DESC_POST = 1400
+    MAX_DESC_POST = 58000  # límite real Facebook ~63.000 chars; dejamos margen
     desc_post = descripcion if len(descripcion) <= MAX_DESC_POST else descripcion[:MAX_DESC_POST].rstrip() + '…'
 
     mensaje = (
@@ -1962,8 +2004,9 @@ def publicar_facebook(titulo, descripcion, imagen_path, hashtags, cta, fuente=''
         f"📰 Verdad Hoy — Noticias Chile 🇨🇱"
     )
 
-    if len(mensaje) > 2200:
-        mensaje = mensaje[:2100] + '…'
+    # Facebook permite hasta ~63.000 chars; solo cortamos como último recurso
+    if len(mensaje) > 62000:
+        mensaje = mensaje[:61900] + '…'
 
     fb_url = f"https://graph.facebook.com/{FB_API_VERSION}/{FB_PAGE_ID}/photos"
     for intento in range(1, FB_MAX_REINTENTOS + 1):
@@ -2005,7 +2048,7 @@ def publicar_facebook_video(titulo, descripcion, video_path, hashtags, cta, fuen
         return False
 
     linea_fuente = formatear_fuente_verificacion(fuente, url)
-    MAX_DESC = 1800
+    MAX_DESC = 58000  # límite real Facebook ~63.000 chars; dejamos margen
     desc_post = descripcion if len(descripcion) <= MAX_DESC else descripcion[:MAX_DESC].rstrip() + '…'
 
     mensaje = (
@@ -2254,7 +2297,7 @@ def main():
 
     # ── Texto completo ────────────────────────────────────────
     log("Obteniendo texto completo del artículo...", 'info')
-    descripcion_completa = obtener_descripcion_completa(seleccionada, max_chars=4000)
+    descripcion_completa = obtener_descripcion_completa(seleccionada, max_chars=8000)
     log(f"Texto final: {len(descripcion_completa)} chars", 'info')
 
     # ── CTAs y hashtags ───────────────────────────────────────
