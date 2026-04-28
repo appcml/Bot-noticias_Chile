@@ -1083,112 +1083,111 @@ def _cargar_fuente_video(bold=True, size=36):
 def crear_frame_video(imagen_noticia, titulo, resumen, categoria,
                       progreso=0.0, mostrar_cta=False, cta_texto=''):
     """
-    Genera un frame PIL 1280×720 con:
-    - Izquierda: panel oscuro + marca + título + resumen
-    - Derecha: imagen nítida con efecto Ken Burns (zoom out)
+    Genera un frame PIL 720×1280 (9:16 vertical — optimizado para Reels).
+    Layout:
+    - Superior: imagen nítida con efecto Ken Burns (~55% del alto)
+    - Inferior: panel oscuro con marca + título + resumen
     - Últimos frames: panel rojo de cierre con CTA
     """
-    W, H = 1280, 720
+    W, H = 720, 1280
     frame = Image.new('RGB', (W, H), (10, 10, 20))
 
-    # ── Panel derecho: imagen con Ken Burns ─────────────────
-    panel_w = 640
+    # ── Zona imagen superior (55% del alto) ─────────────────
+    IMG_H = int(H * 0.55)   # ~704px
     if imagen_noticia:
         try:
-            # Ken Burns: zoom 130% → 100% a lo largo del video
-            escala  = 1.30 - (0.30 * progreso)
-            img     = imagen_noticia.copy()
-            iw, ih  = img.size
-            nw, nh  = int(iw * escala), int(ih * escala)
-            img     = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            # Ken Burns: zoom 130% → 100%
+            escala = 1.30 - (0.30 * progreso)
+            img    = imagen_noticia.copy()
+            iw, ih = img.size
+            # escalar para cubrir el área superior completa
+            ratio  = max(W / iw, IMG_H / ih) * escala
+            nw, nh = int(iw * ratio), int(ih * ratio)
+            img    = img.resize((nw, nh), Image.Resampling.LANCZOS)
             # centrar
-            x = (nw - panel_w) // 2
-            y = (nh - H) // 2
-            x = max(0, min(x, nw - panel_w))
-            y = max(0, min(y, nh - H))
-            img = img.crop((x, y, x + panel_w, y + H))
-            # mejorar nitidez
+            x = max(0, (nw - W) // 2)
+            y = max(0, (nh - IMG_H) // 2)
+            img = img.crop((x, y, x + W, y + IMG_H))
+            # nitidez
             img = ImageEnhance.Sharpness(img).enhance(1.4)
             img = ImageEnhance.Contrast(img).enhance(1.1)
-            # gradiente de fusión en el borde izquierdo
-            grad = Image.new('L', (80, H))
-            for px in range(80):
-                grad.putpixel((px, 0), int(255 * (px / 80)))
-            for py in range(1, H):
-                for px in range(80):
-                    grad.putpixel((px, py), grad.getpixel((px, 0)))
-            mask = Image.new('L', (panel_w, H), 255)
-            mask.paste(grad, (0, 0))
-            frame.paste(img, (W - panel_w, 0), mask)
+            # gradiente suave en el borde inferior (fusión con panel)
+            grad_h = 120
+            grad   = Image.new('L', (W, IMG_H), 255)
+            for gy in range(grad_h):
+                alpha = int(255 * (1 - gy / grad_h))
+                for gx in range(W):
+                    grad.putpixel((gx, IMG_H - grad_h + gy), alpha)
+            frame.paste(img, (0, 0), grad)
         except Exception as e:
             log(f"Error frame imagen: {e}", 'advertencia')
 
     draw = ImageDraw.Draw(frame)
 
-    # ── Panel izquierdo: fondo semitransparente ─────────────
-    panel = Image.new('RGBA', (680, H), (10, 10, 20, 220))
-    frame.paste(Image.fromarray(
-        __import__('numpy', fromlist=['']).array(panel)[:, :, :3], 'RGB'
-    ), (0, 0)) if False else None  # evitar numpy; usar draw directo
-    draw.rectangle([(0, 0), (660, H)], fill=(12, 12, 25))
-
-    # Acento lateral rojo bandera
-    draw.rectangle([(0, 0), (6, H)], fill=(210, 16, 52))
-
-    # ── Marca superior ──────────────────────────────────────
+    # ── Barra de marca superior (sobre la imagen) ────────────
     color_cat = COLORES_BACKUP.get(categoria, COLORES_BACKUP['neutral'])
-    draw.rectangle([(6, 0), (660, 52)], fill=color_cat)
-    font_marca = _cargar_fuente_video(True, 22)
-    draw.text((18, 14), '🇨🇱 VERDAD HOY — NOTICIAS CHILE', font=font_marca, fill=(255, 255, 255))
+    draw.rectangle([(0, 0), (W, 56)], fill=color_cat)
+    # acento rojo lateral
+    draw.rectangle([(0, 0), (6, 56)], fill=(210, 16, 52))
+    font_marca = _cargar_fuente_video(True, 20)
+    draw.text((14, 16), 'VERDAD HOY — NOTICIAS CHILE', font=font_marca, fill=(255, 255, 255))
 
-    # ── ÚLTIMA HORA badge ───────────────────────────────────
-    alpha_badge = min(1.0, progreso * 5)  # fade-in rápido
-    if alpha_badge > 0.3:
-        draw.rectangle([(18, 64), (200, 90)], fill=(210, 16, 52))
-        font_badge = _cargar_fuente_video(True, 16)
-        draw.text((24, 68), 'ÚLTIMA HORA', font=font_badge, fill=(255, 255, 255))
+    # ── ÚLTIMA HORA badge (sobre imagen) ────────────────────
+    if progreso > 0.05:
+        draw.rectangle([(14, 66), (190, 92)], fill=(210, 16, 52))
+        font_badge = _cargar_fuente_video(True, 17)
+        draw.text((20, 70), 'ÚLTIMA HORA', font=font_badge, fill=(255, 255, 255))
+
+    # ── Panel texto inferior ─────────────────────────────────
+    PANEL_Y = IMG_H
+    draw.rectangle([(0, PANEL_Y), (W, H)], fill=(12, 12, 25))
+    # acento rojo superior del panel
+    draw.rectangle([(0, PANEL_Y), (W, PANEL_Y + 4)], fill=(210, 16, 52))
 
     # ── Título ───────────────────────────────────────────────
-    font_tit = _cargar_fuente_video(True, 32)
-    lineas_tit = textwrap.wrap(titulo[:120], width=22)[:4]
-    y = 108
+    font_tit   = _cargar_fuente_video(True, 34)
+    lineas_tit = textwrap.wrap(titulo[:130], width=20)[:4]
+    y = PANEL_Y + 20
     for linea in lineas_tit:
-        # sombra
-        draw.text((20, y + 2), linea, font=font_tit, fill=(0, 0, 0))
-        draw.text((18, y),     linea, font=font_tit, fill=(255, 255, 255))
-        y += 42
+        draw.text((18, y + 2), linea, font=font_tit, fill=(0, 0, 0))   # sombra
+        draw.text((16, y),     linea, font=font_tit, fill=(255, 255, 255))
+        y += 46
 
     # Separador
-    draw.rectangle([(18, y + 8), (280, y + 10)], fill=(210, 16, 52))
-    y += 22
+    draw.rectangle([(16, y + 6), (260, y + 8)], fill=(210, 16, 52))
+    y += 20
 
-    # ── Resumen (aparece con delay) ──────────────────────────
-    if progreso > 0.15:
-        font_res = _cargar_fuente_video(False, 20)
-        lineas_res = textwrap.wrap(resumen[:260], width=30)[:6]
+    # ── Resumen ──────────────────────────────────────────────
+    if progreso > 0.12:
+        font_res   = _cargar_fuente_video(False, 22)
+        lineas_res = textwrap.wrap(resumen[:300], width=28)[:5]
         for linea in lineas_res:
-            draw.text((18, y), linea, font=font_res, fill=(200, 200, 210))
-            y += 28
+            if y + 30 > H - 60:
+                break
+            draw.text((16, y), linea, font=font_res, fill=(190, 190, 205))
+            y += 30
 
-    # ── Footer con fecha ─────────────────────────────────────
-    font_foot = _cargar_fuente_video(False, 16)
+    # ── Footer ───────────────────────────────────────────────
+    font_foot = _cargar_fuente_video(False, 17)
     fecha_str = datetime.now().strftime('%d/%m/%Y %H:%M')
-    draw.text((18, H - 30), f'verdadhoy.cl  |  {fecha_str}', font=font_foot, fill=(120, 120, 140))
+    draw.text((16, H - 34), f'verdadhoy.cl  |  {fecha_str}', font=font_foot, fill=(110, 110, 130))
 
     # ── Panel rojo de cierre (últimos frames) ────────────────
     if mostrar_cta and cta_texto:
-        # fondo rojo
-        draw.rectangle([(0, H - 140), (W, H)], fill=(180, 10, 30))
-        draw.rectangle([(0, H - 144), (W, H - 140)], fill=(255, 255, 255))
-        font_cta1 = _cargar_fuente_video(True, 30)
-        font_cta2 = _cargar_fuente_video(False, 19)
-        # línea 1: pregunta temática
-        cta_limpio = re.sub(r'[🇦-🇿\U00010000-\U0010ffff]', '', cta_texto).strip()
-        draw.text((W // 2 - 300, H - 125), cta_limpio, font=font_cta1, fill=(255, 255, 255))
-        # línea 2: instrucciones
-        draw.text((W // 2 - 290, H - 76),
-                  '💬 Comenta  ·  👍 Reacciona  ·  🔁 Comparte  ·  Más detalles en la descripción 👇',
-                  font=font_cta2, fill=(255, 220, 220))
+        draw.rectangle([(0, H - 160), (W, H)], fill=(180, 10, 30))
+        draw.rectangle([(0, H - 164), (W, H - 160)], fill=(255, 255, 255))
+        font_cta1 = _cargar_fuente_video(True, 27)
+        font_cta2 = _cargar_fuente_video(False, 18)
+        cta_limpio = re.sub(r'[🇦-🇿𐀀-􏿿]', '', cta_texto).strip()
+        # centrar el CTA
+        lineas_cta = textwrap.wrap(cta_limpio, width=28)[:2]
+        cy = H - 148
+        for lc in lineas_cta:
+            draw.text((18, cy), lc, font=font_cta1, fill=(255, 255, 255))
+            cy += 36
+        draw.text((18, H - 42),
+                  'Comenta · Reacciona · Comparte · Ver descripcion',
+                  font=font_cta2, fill=(255, 200, 200))
 
     return frame
 
@@ -1252,6 +1251,8 @@ def crear_video_noticia(imagen_path, titulo, descripcion, categoria, cta_video):
             '-i', '/tmp/frame_%05d.png',
             '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
             '-preset', 'fast', '-crf', '23',
+            '-vf', 'scale=720:1280',          # forzar 9:16 vertical
+            '-metadata:s:v', 'rotate=0',       # sin rotación (ya es vertical)
             video_sin_audio
         ], check=True, capture_output=True, timeout=120)
 
