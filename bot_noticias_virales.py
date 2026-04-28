@@ -69,43 +69,95 @@ HORARIOS_PICO_UTC = [
     (time(0,  0), time(2,  0)),
 ]
 
-# ── Voces edge-tts — Chile primero, luego variantes latino ──
+# ── Voces edge-tts — 4 presentadores rotativos latino ───────
 VOCES_TTS = [
-    'es-CL-CatalinaNeural',  # presentadora chilena nativa ← principal
-    'es-CL-LorenzoNeural',   # conductor chileno nativo
-    'es-MX-DaliaNeural',     # presentadora mexicana (backup)
-    'es-CO-SalomeNeural',    # presentadora colombiana (backup)
+    'es-MX-DaliaNeural',    # presentadora mexicana, cálida
+    'es-MX-JorgeNeural',    # conductor mexicano, serio
+    'es-CO-SalomeNeural',   # presentadora colombiana, dinámica
+    'es-AR-ElenaNeural',    # presentadora argentina, expresiva
 ]
 
-# Siglas chilenas comunes → pronunciación fonética para TTS
+# Siglas y abreviaciones → pronunciación fonética para TTS
+# Regla: si suena como palabra → dejarlo así | si es letra por letra → separar con espacios
 SIGLAS_PRONUNCIACION = {
-    'SHOA':    'Shoa',          # Servicio Hidrográfico
-    'ONEMI':   'Onemi',
-    'SENAPRED':'Senapred',
-    'CONAF':   'Conaf',
-    'MINSAL':  'Minsal',
-    'SEREMI':  'Seremi',
-    'PDI':     'Pe De I',
-    'SII':     'S I I',
-    'AFP':     'A F P',
-    'CAE':     'C A E',
-    'PAES':    'Paes',
-    'SIMCE':   'Simce',
-    'ENAP':    'Enap',
-    'LATAM':   'Látam',
-    'PIB':     'P I B',
-    'IPC':     'I P C',
-    'TVN':     'T V N',
-    'CNN':     'C N N',
-    'CHV':     'C H V',
-    'CONAF':   'Conaf',
-    'FONASA':  'Fonasa',
-    'ISAPRE':  'Isapre',
-    'ONU':     'O N U',
-    'EEUU':    'Estados Unidos',
-    'EE.UU.':  'Estados Unidos',
-    'VIF':     'V I F',
-    'RSH':     'R S H',
+    # ── Organismos chilenos que SUENAN como palabra ──────────
+    'SHOA':      'Shoa',
+    'ONEMI':     'Onemi',
+    'SENAPRED':  'Senapred',
+    'CONAF':     'Conaf',
+    'MINSAL':    'Minsal',
+    'SEREMI':    'Seremi',
+    'SERVEL':    'Servel',
+    'SERNAC':    'Sernac',
+    'FONASA':    'Fonasa',
+    'ISAPRE':    'Isapre',
+    'ENAP':      'Enap',
+    'JUNJI':     'Junji',
+    'CODELCO':   'Codelco',
+    'LATAM':     'Látam',
+    'PAES':      'Paes',
+    'SIMCE':     'Simce',
+    'CRUCH':     'Cruch',
+    'SERVIU':    'Serviu',
+    # ── Organismos que se DELETREAN ──────────────────────────
+    'PDI':       'Pe De I',
+    'SII':       'ese i i',
+    'AFP':       'a efe pe',
+    'CAE':       'ce a e',
+    'PIB':       'pe i be',
+    'IPC':       'i pe ce',
+    'TVN':       'te ve ene',
+    'CNN':       'ce ene ene',
+    'CHV':       'ce hache ve',
+    'ONU':       'o ene u',
+    'VIF':       've i efe',
+    'RSH':       'erre ese hache',
+    'PDH':       'pe de hache',
+    'BCN':       'be ce ene',
+    # ── Países y organizaciones internacionales ──────────────
+    'EEUU':      'Estados Unidos',
+    'EE.UU.':    'Estados Unidos',
+    'EE. UU.':   'Estados Unidos',
+    'UE':        'Unión Europea',
+    'OTAN':      'Otan',
+    'FIFA':      'Fifa',
+    'UEFA':      'Uefa',
+    'OCDE':      'o ce de e',
+    'FMI':       'efe eme i',
+    'BID':       'be i de',
+    # ── Medios y canales ─────────────────────────────────────
+    'T13':       'Teletrece',
+    'CHV':       'Chilevision',
+    'CNN Chile': 'Ce ene ene Chile',
+    # ── Términos económicos y técnicos ───────────────────────
+    'PIB':       'pe i be',
+    'IVA':       'i ve a',
+    'UF':        'u efe',
+    'UTM':       'u te eme',
+    'GPS':       'ge pe ese',
+    'IA':        'inteligencia artificial',
+    'AI':        'inteligencia artificial',
+    # ── Correcciones de pronunciación natural ────────────────
+    'Kast':      'Kast',          # evitar que suene "kast" extraño
+    'Boric':     'Bóric',
+    'Kaiser':    'Káiser',
+    'Mirosevic': 'Mirosévic',
+    'Matthei':   'Mátei',
+    'Jara':      'Jara',
+    'km':        'kilómetros',
+    'km/h':      'kilómetros por hora',
+    'mm':        'milímetros',
+    'cms':       'centímetros',
+    'mts':       'metros',
+    'hrs':       'horas',
+    'min':       'minutos',
+    'N°':        'número',
+    'Nº':        'número',
+    '$':         'pesos',
+    'USD':       'dólares',
+    'US$':       'dólares',
+    'UF':        'unidades de fomento',
+    '%':         'por ciento',
 }
 
 TIEMPO_ENTRE_PUBLICACIONES = 28          # minutos (un poco menos de 30 para margen)
@@ -985,21 +1037,52 @@ def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_ch
 
 def _limpiar_para_voz(texto):
     """
-    Prepara el texto para TTS:
-    - Reemplaza siglas chilenas por su pronunciación fonética
-    - Elimina emojis, hashtags y caracteres no pronunciables
+    Prepara el texto para TTS con fonética natural en español:
+    1. Aplica diccionario de siglas y abreviaciones
+    2. Convierte símbolos a palabras (%, $, km, etc.)
+    3. Mejora la pronunciación de números y fechas
+    4. Elimina caracteres no pronunciables
     """
     if not texto:
         return ''
-    # Reemplazar siglas por pronunciación (word boundary para no tocar palabras dentro)
-    for sigla, fonetica in SIGLAS_PRONUNCIACION.items():
-        texto = re.sub(rf'\b{re.escape(sigla)}\b', fonetica, texto)
-    # Limpiar emojis y símbolos
-    texto = re.sub(r'[\U00010000-\U0010ffff]', '', texto)
-    texto = re.sub(r'[🇦-🇿]{2}', '', texto)
+
+    # ── 1. Siglas del diccionario (orden importa: más largas primero) ──
+    for sigla, fonetica in sorted(SIGLAS_PRONUNCIACION.items(),
+                                   key=lambda x: len(x[0]), reverse=True):
+        try:
+            texto = re.sub(rf'(?<![\w]){re.escape(sigla)}(?![\w])',
+                           fonetica, texto, flags=re.IGNORECASE)
+        except Exception:
+            pass
+
+    # ── 2. Símbolos → palabras ───────────────────────────────
+    texto = re.sub(r'(\d+(?:[.,]\d+)?)\s*%', r'\1 por ciento', texto)
+    texto = re.sub(r'US\$\s*(\d)', r'\1 dólares', texto)
+    texto = re.sub(r'\$\s*(\d+(?:[.,]\d+)?)', r'\1 pesos', texto)
+    texto = re.sub(r'(\d+)\s*km/h', r'\1 kilómetros por hora', texto)
+    texto = re.sub(r'(\d+)\s*km',   r'\1 kilómetros', texto)
+    texto = re.sub(r'(\d+)\s*mm',   r'\1 milímetros', texto)
+    texto = re.sub(r'(\d+)\s*cm',   r'\1 centímetros', texto)
+    texto = re.sub(r'(\d+)\s*mts?', r'\1 metros', texto)
+    texto = re.sub(r'(\d+)\s*hrs?', r'\1 horas', texto)
+    texto = re.sub(r'N[°º]\s*(\d)', r'número \1', texto)
+
+    # ── 3. Números grandes → más legibles ────────────────────
+    # 1.000 → 1000 (eliminar puntos de miles para que TTS no los lea como decimales)
+    texto = re.sub(r'(\d)\.(?=\d{3})', r'\1', texto)
+
+    # ── 4. Limpiar emojis, banderas y símbolos visuales ──────
+    texto = re.sub(r'[\U00010000-\U0010ffff]', '', texto)  # emojis planos
+    texto = re.sub(r'[🇦-🇿]{2}', '', texto)                  # banderas
     texto = re.sub(r'[#@]', '', texto)
-    texto = re.sub(r'[─═]', '', texto)           # separadores
+    texto = re.sub(r'[─═▪►•·…]', ' ', texto)
+    texto = re.sub(r'[""]', '"', texto)    # comillas tipográficas → rectas
+    texto = re.sub(r'['']', "'", texto)
+
+    # ── 5. Limpiar espacios dobles y puntuación final ─────────
     texto = re.sub(r'\s+', ' ', texto).strip()
+    texto = re.sub(r'\.{2,}', '.', texto)   # múltiples puntos → uno
+
     return texto
 
 def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=300):
