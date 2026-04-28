@@ -55,7 +55,7 @@ FB_API_VERSION = 'v21.0'   # actualizado desde v18.0
 FB_MAX_REINTENTOS = 3      # intentos antes de declarar fallo en publicación FB
 
 # ── Horarios pico y límite diario ────────────────────────────
-MAX_POSTS_POR_DIA  = 10
+MAX_POSTS_POR_DIA  = 8
 FORZAR_PUBLICACION = os.getenv('FORZAR_PUBLICACION', 'false').lower() == 'true'
 
 # Horarios pico en UTC para audiencia hispanohablante (Chile = UTC-3 o UTC-4)
