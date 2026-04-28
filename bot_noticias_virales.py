@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VERDAD HOY — NOTICIAS CHILE 24/7 - V6.0
+VERDAD HOY — NOTICIAS CHILE 24/7 - V7.0
 Foco 100% Chile: noticias nacionales + internacionales relacionadas con Chile
 Prioriza noticias con imagen | CTA poderoso | Publica cada 30 minutos
+MEJORAS V7.0:
+  - Video automático con diseño split + efecto Ken Burns
+  - Voz natural edge-tts (4 presentadores rotativos, español latino)
+  - CTA temático doble: en el post y en el video (panel rojo de cierre)
+  - Horarios pico Chile + límite 6 posts/día
+  - Modo FORZAR_PUBLICACION para pruebas desde GitHub Actions
+  - NewsData API implementada (estaba declarada pero sin usar)
+  - Publicación dual: Facebook video/foto + WordPress (opcional)
+  - Queries NewsAPI actualizadas (gobierno Kast 2026)
+  - Reintento inteligente en publicación Facebook (3 intentos)
+  - API Graph actualizada a v21.0
 """
 
 import requests
@@ -14,10 +25,13 @@ import json
 import os
 import random
 import textwrap
-from datetime import datetime
+import asyncio
+import subprocess
+import time as time_module
+from datetime import datetime, time
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN
@@ -29,8 +43,39 @@ GNEWS_API_KEY     = os.getenv('GNEWS_API_KEY')
 FB_PAGE_ID        = os.getenv('FB_PAGE_ID')
 FB_ACCESS_TOKEN   = os.getenv('FB_ACCESS_TOKEN')
 
+# WordPress (opcional — si no están configuradas, se omite publicación WP)
+WP_URL            = os.getenv('WP_URL', '')          # ej: https://verdadhoy.cl
+WP_USER           = os.getenv('WP_USER', '')         # usuario editor WordPress
+WP_APP_PASSWORD   = os.getenv('WP_APP_PASSWORD', '') # Application Password de WP
+
 HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_chile.json')
 ESTADO_PATH    = os.getenv('ESTADO_PATH',    'data/estado_bot_chile.json')
+
+FB_API_VERSION = 'v21.0'   # actualizado desde v18.0
+FB_MAX_REINTENTOS = 3      # intentos antes de declarar fallo en publicación FB
+
+# ── Horarios pico y límite diario ────────────────────────────
+MAX_POSTS_POR_DIA  = 8
+FORZAR_PUBLICACION = os.getenv('FORZAR_PUBLICACION', 'false').lower() == 'true'
+
+# Horarios pico en UTC para audiencia hispanohablante (Chile = UTC-3 o UTC-4)
+# 10:00-14:00 UTC = 06:00-10:00 Chile (mañana)
+# 15:00-19:00 UTC = 11:00-15:00 Chile (mediodía)
+# 22:00-02:00 UTC = 18:00-22:00 Chile (noche)
+HORARIOS_PICO_UTC = [
+    (time(10, 0), time(14, 0)),
+    (time(15, 0), time(19, 0)),
+    (time(22, 0), time(23, 59)),
+    (time(0,  0), time(2,  0)),
+]
+
+# ── Voces edge-tts en español latino ─────────────────────────
+VOCES_TTS = [
+    'es-MX-DaliaNeural',    # presentadora mexicana, cálida
+    'es-MX-JorgeNeural',    # conductor mexicano, serio
+    'es-CO-SalomeNeural',   # presentadora colombiana, dinámica
+    'es-AR-ElenaNeural',    # presentadora argentina, expresiva
+]
 
 TIEMPO_ENTRE_PUBLICACIONES = 28          # minutos (un poco menos de 30 para margen)
 MAX_TITULOS_HISTORIA       = 500
@@ -455,6 +500,66 @@ def obtener_cta(categoria, titulo=''):
     return random.choice(ctas)
 
 
+# ─────────────────────────────────────────────────────────────
+# CTA PARA VIDEO (panel rojo de cierre + voz)
+# ─────────────────────────────────────────────────────────────
+
+CTAS_VIDEO = {
+    'politica':      "¿Estás de acuerdo? SÍ o NO en comentarios 👇",
+    'economia':      "¿Sientes esto en tu bolsillo? Comenta 👇",
+    'seguridad':     "¿Te sientes seguro/a en Chile hoy? Comenta 👇",
+    'policial':      "¿La justicia actuó bien? Opina abajo 👇",
+    'social':        "¿Chile merece más igualdad? Comenta 👇",
+    'educacion':     "¿Va bien la educación en Chile? Opina 👇",
+    'internacional': "¿Cómo afecta esto a Chile? Comenta 👇",
+    'tecnologia':    "¿La IA nos ayuda o nos amenaza? Comenta 👇",
+    'deporte':       "¿Crees que lo logramos? Comenta 🇨🇱",
+    'ciencia':       "¿Sabías esto? Comenta y comparte 👇",
+    'medioambiente': "¿Preocupado/a por Chile? Comenta 👇",
+    'cultura':       "¿Orgullo chileno? ¡Comenta! 🇨🇱",
+    'conflicto':     "¿Cuál es tu solución? Comenta 👇",
+    'corrupcion':    "¿Indignado/a? Comenta y comparte 👇",
+    'escandalo':     "¿Lo podías creer? Comenta tu reacción 👇",
+    'default':       "¿Qué opinas? Comenta abajo 👇",
+}
+
+def obtener_cta_video(categoria, titulo=''):
+    """CTA corto para el panel rojo del video"""
+    palabras_urgencia = ['urgente', 'alerta', 'terremoto', 'tsunami', 'incendio']
+    if any(p in titulo.lower() for p in palabras_urgencia):
+        return "🚨 URGENTE — Comenta y comparte ahora 🔁"
+    return CTAS_VIDEO.get(categoria, CTAS_VIDEO['default'])
+
+
+# ─────────────────────────────────────────────────────────────
+# HORARIOS PICO + LÍMITE DIARIO
+# ─────────────────────────────────────────────────────────────
+
+def esta_en_horario_pico():
+    """Retorna True si la hora UTC actual está en una ventana pico"""
+    if FORZAR_PUBLICACION:
+        return True
+    ahora = datetime.utcnow().time()
+    for inicio, fin in HORARIOS_PICO_UTC:
+        if inicio <= fin:
+            if inicio <= ahora <= fin:
+                return True
+        else:  # cruza medianoche
+            if ahora >= inicio or ahora <= fin:
+                return True
+    return False
+
+def limite_diario_alcanzado(historial):
+    """Retorna True si ya se publicaron MAX_POSTS_POR_DIA hoy"""
+    if FORZAR_PUBLICACION:
+        return False
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    timestamps = historial.get('timestamps', [])
+    posts_hoy = sum(1 for ts in timestamps if ts.startswith(hoy))
+    log(f"Posts hoy: {posts_hoy}/{MAX_POSTS_POR_DIA}", 'info')
+    return posts_hoy >= MAX_POSTS_POR_DIA
+
+
 # ═══════════════════════════════════════════════════════════════
 # FUNCIONES UTILITARIAS
 # ═══════════════════════════════════════════════════════════════
@@ -841,6 +946,323 @@ def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_ch
         puntaje += 3
 
     return puntaje
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUDIO — edge-tts con fallback a espeak
+# ═══════════════════════════════════════════════════════════════
+
+def _limpiar_para_voz(texto):
+    """Elimina emojis y caracteres especiales antes de pasarlos a TTS"""
+    texto = re.sub(r'[\U00010000-\U0010ffff]', '', texto)   # emojis
+    texto = re.sub(r'[🇦-🇿]{2}', '', texto)                  # banderas
+    texto = re.sub(r'[#@]', '', texto)
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    return texto
+
+def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=300):
+    """
+    Genera audio MP3 con la voz leyendo:
+    'Última hora. [TÍTULO]. [RESUMEN]. [CTA]. Comenta, reacciona y comparte.
+    Más detalles en la descripción de esta publicación.'
+    Retorna ruta del MP3 o None si falla.
+    """
+    titulo_voz = _limpiar_para_voz(titulo)
+    desc_corta = _limpiar_para_voz(descripcion[:max_desc_chars])
+    if desc_corta and not desc_corta.endswith('.'):
+        desc_corta = desc_corta.rstrip('…').strip() + '.'
+    cta_voz = _limpiar_para_voz(cta_video.split('👇')[0].strip())
+
+    guion = (
+        f"Última hora. {titulo_voz}. "
+        f"{desc_corta} "
+        f"{cta_voz}. "
+        "Comenta, reacciona y comparte. "
+        "Más detalles en la descripción de esta publicación."
+    )
+
+    voz    = random.choice(VOCES_TTS)
+    out_mp3 = f'/tmp/audio_{hashlib.md5(titulo.encode()).hexdigest()[:8]}.mp3'
+
+    # ── Intentar edge-tts ────────────────────────────────────
+    try:
+        import edge_tts
+        async def _generar():
+            comm = edge_tts.Communicate(guion, voz, rate='+8%')
+            await comm.save(out_mp3)
+        asyncio.run(_generar())
+        if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 5000:
+            log(f"🔊 Audio TTS generado con {voz} ({os.path.getsize(out_mp3)//1024} KB)", 'exito')
+            return out_mp3
+    except Exception as e:
+        log(f"edge-tts falló ({e}), intentando espeak...", 'advertencia')
+
+    # ── Fallback: espeak ─────────────────────────────────────
+    try:
+        wav_path = out_mp3.replace('.mp3', '.wav')
+        subprocess.run(
+            ['espeak', '-v', 'es-la', '-s', '145', '-w', wav_path, guion],
+            check=True, capture_output=True, timeout=30
+        )
+        # convertir WAV → MP3 con ffmpeg
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-q:a', '4', out_mp3],
+            check=True, capture_output=True, timeout=30
+        )
+        try:
+            os.remove(wav_path)
+        except:
+            pass
+        if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 1000:
+            log(f"🔊 Audio espeak generado ({os.path.getsize(out_mp3)//1024} KB)", 'info')
+            return out_mp3
+    except Exception as e:
+        log(f"espeak también falló: {e}", 'error')
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# VIDEO — Generación con Ken Burns + diseño split
+# ═══════════════════════════════════════════════════════════════
+
+def _cargar_fuente_video(bold=True, size=36):
+    rutas = [
+        f'/usr/share/fonts/truetype/dejavu/DejaVuSans-{"Bold" if bold else ""}.ttf',
+        f'/usr/share/fonts/truetype/liberation/LiberationSans-{"Bold" if bold else "Regular"}.ttf',
+    ]
+    for r in rutas:
+        try:
+            return ImageFont.truetype(r, size)
+        except:
+            pass
+    return ImageFont.load_default()
+
+def crear_frame_video(imagen_noticia, titulo, resumen, categoria,
+                      progreso=0.0, mostrar_cta=False, cta_texto=''):
+    """
+    Genera un frame PIL 1280×720 con:
+    - Izquierda: panel oscuro + marca + título + resumen
+    - Derecha: imagen nítida con efecto Ken Burns (zoom out)
+    - Últimos frames: panel rojo de cierre con CTA
+    """
+    W, H = 1280, 720
+    frame = Image.new('RGB', (W, H), (10, 10, 20))
+
+    # ── Panel derecho: imagen con Ken Burns ─────────────────
+    panel_w = 640
+    if imagen_noticia:
+        try:
+            # Ken Burns: zoom 130% → 100% a lo largo del video
+            escala  = 1.30 - (0.30 * progreso)
+            img     = imagen_noticia.copy()
+            iw, ih  = img.size
+            nw, nh  = int(iw * escala), int(ih * escala)
+            img     = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            # centrar
+            x = (nw - panel_w) // 2
+            y = (nh - H) // 2
+            x = max(0, min(x, nw - panel_w))
+            y = max(0, min(y, nh - H))
+            img = img.crop((x, y, x + panel_w, y + H))
+            # mejorar nitidez
+            img = ImageEnhance.Sharpness(img).enhance(1.4)
+            img = ImageEnhance.Contrast(img).enhance(1.1)
+            # gradiente de fusión en el borde izquierdo
+            grad = Image.new('L', (80, H))
+            for px in range(80):
+                grad.putpixel((px, 0), int(255 * (px / 80)))
+            for py in range(1, H):
+                for px in range(80):
+                    grad.putpixel((px, py), grad.getpixel((px, 0)))
+            mask = Image.new('L', (panel_w, H), 255)
+            mask.paste(grad, (0, 0))
+            frame.paste(img, (W - panel_w, 0), mask)
+        except Exception as e:
+            log(f"Error frame imagen: {e}", 'advertencia')
+
+    draw = ImageDraw.Draw(frame)
+
+    # ── Panel izquierdo: fondo semitransparente ─────────────
+    panel = Image.new('RGBA', (680, H), (10, 10, 20, 220))
+    frame.paste(Image.fromarray(
+        __import__('numpy', fromlist=['']).array(panel)[:, :, :3], 'RGB'
+    ), (0, 0)) if False else None  # evitar numpy; usar draw directo
+    draw.rectangle([(0, 0), (660, H)], fill=(12, 12, 25))
+
+    # Acento lateral rojo bandera
+    draw.rectangle([(0, 0), (6, H)], fill=(210, 16, 52))
+
+    # ── Marca superior ──────────────────────────────────────
+    color_cat = COLORES_BACKUP.get(categoria, COLORES_BACKUP['neutral'])
+    draw.rectangle([(6, 0), (660, 52)], fill=color_cat)
+    font_marca = _cargar_fuente_video(True, 22)
+    draw.text((18, 14), '🇨🇱 VERDAD HOY — NOTICIAS CHILE', font=font_marca, fill=(255, 255, 255))
+
+    # ── ÚLTIMA HORA badge ───────────────────────────────────
+    alpha_badge = min(1.0, progreso * 5)  # fade-in rápido
+    if alpha_badge > 0.3:
+        draw.rectangle([(18, 64), (200, 90)], fill=(210, 16, 52))
+        font_badge = _cargar_fuente_video(True, 16)
+        draw.text((24, 68), 'ÚLTIMA HORA', font=font_badge, fill=(255, 255, 255))
+
+    # ── Título ───────────────────────────────────────────────
+    font_tit = _cargar_fuente_video(True, 32)
+    lineas_tit = textwrap.wrap(titulo[:120], width=22)[:4]
+    y = 108
+    for linea in lineas_tit:
+        # sombra
+        draw.text((20, y + 2), linea, font=font_tit, fill=(0, 0, 0))
+        draw.text((18, y),     linea, font=font_tit, fill=(255, 255, 255))
+        y += 42
+
+    # Separador
+    draw.rectangle([(18, y + 8), (280, y + 10)], fill=(210, 16, 52))
+    y += 22
+
+    # ── Resumen (aparece con delay) ──────────────────────────
+    if progreso > 0.15:
+        font_res = _cargar_fuente_video(False, 20)
+        lineas_res = textwrap.wrap(resumen[:260], width=30)[:6]
+        for linea in lineas_res:
+            draw.text((18, y), linea, font=font_res, fill=(200, 200, 210))
+            y += 28
+
+    # ── Footer con fecha ─────────────────────────────────────
+    font_foot = _cargar_fuente_video(False, 16)
+    fecha_str = datetime.now().strftime('%d/%m/%Y %H:%M')
+    draw.text((18, H - 30), f'verdadhoy.cl  |  {fecha_str}', font=font_foot, fill=(120, 120, 140))
+
+    # ── Panel rojo de cierre (últimos frames) ────────────────
+    if mostrar_cta and cta_texto:
+        # fondo rojo
+        draw.rectangle([(0, H - 140), (W, H)], fill=(180, 10, 30))
+        draw.rectangle([(0, H - 144), (W, H - 140)], fill=(255, 255, 255))
+        font_cta1 = _cargar_fuente_video(True, 30)
+        font_cta2 = _cargar_fuente_video(False, 19)
+        # línea 1: pregunta temática
+        cta_limpio = re.sub(r'[🇦-🇿\U00010000-\U0010ffff]', '', cta_texto).strip()
+        draw.text((W // 2 - 300, H - 125), cta_limpio, font=font_cta1, fill=(255, 255, 255))
+        # línea 2: instrucciones
+        draw.text((W // 2 - 290, H - 76),
+                  '💬 Comenta  ·  👍 Reacciona  ·  🔁 Comparte  ·  Más detalles en la descripción 👇',
+                  font=font_cta2, fill=(255, 220, 220))
+
+    return frame
+
+
+def crear_video_noticia(imagen_path, titulo, descripcion, categoria, cta_video):
+    """
+    Genera un video MP4 de ~28 segundos con:
+    - Ken Burns sobre la imagen + panel informativo animado
+    - Audio de voz (edge-tts / espeak)
+    - Panel rojo de cierre con CTA
+    Retorna ruta del MP4 o None si falla.
+    """
+    try:
+        from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+    except ImportError:
+        log("moviepy no disponible — usando imagen", 'advertencia')
+        return None
+
+    try:
+        FPS        = 24
+        DURACION   = 28       # segundos totales
+        CTA_DESDE  = 23       # segundo en que aparece panel rojo
+        total_frames = FPS * DURACION
+
+        # Cargar y preparar imagen base
+        img_base = None
+        if imagen_path and os.path.exists(imagen_path):
+            try:
+                img_raw  = Image.open(imagen_path).convert('RGB')
+                # escalar a mínimo 1280px de ancho manteniendo ratio
+                w, h = img_raw.size
+                if w < 1280:
+                    img_raw = img_raw.resize((1280, int(h * 1280 / w)), Image.Resampling.LANCZOS)
+                img_base = img_raw
+            except Exception as e:
+                log(f"Error cargando imagen para video: {e}", 'advertencia')
+
+        resumen_corto = descripcion[:280] if descripcion else ''
+
+        # Generar frames
+        log("🎬 Generando frames del video...", 'info')
+        frames_paths = []
+        for i in range(total_frames):
+            progreso   = i / total_frames
+            mostrar_cta = i >= (CTA_DESDE * FPS)
+            frame = crear_frame_video(
+                img_base, titulo, resumen_corto, categoria,
+                progreso=progreso,
+                mostrar_cta=mostrar_cta,
+                cta_texto=re.sub(r'[🇦-🇿\U00010000-\U0010ffff👇👍🔁💬]', '', cta_video)
+            )
+            fpath = f'/tmp/frame_{i:05d}.png'
+            frame.save(fpath)
+            frames_paths.append(fpath)
+
+        # Ensamblar con ffmpeg (más estable que moviepy para frames)
+        video_sin_audio = f'/tmp/video_sa_{hashlib.md5(titulo.encode()).hexdigest()[:8]}.mp4'
+        subprocess.run([
+            'ffmpeg', '-y',
+            '-framerate', str(FPS),
+            '-i', '/tmp/frame_%05d.png',
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            '-preset', 'fast', '-crf', '23',
+            video_sin_audio
+        ], check=True, capture_output=True, timeout=120)
+
+        # Limpiar frames
+        for fp in frames_paths:
+            try:
+                os.remove(fp)
+            except:
+                pass
+
+        # Generar audio
+        audio_path = crear_audio_noticia(titulo, resumen_corto,
+                                          re.sub(r'[🇦-🇿\U00010000-\U0010ffff👇]', '', cta_video))
+
+        video_final = f'/tmp/verdadhoy_video_{hashlib.md5(titulo.encode()).hexdigest()[:8]}.mp4'
+
+        if audio_path and os.path.exists(audio_path):
+            # Mezclar audio + video
+            subprocess.run([
+                'ffmpeg', '-y',
+                '-i', video_sin_audio,
+                '-i', audio_path,
+                '-c:v', 'copy',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-shortest',
+                video_final
+            ], check=True, capture_output=True, timeout=60)
+            try:
+                os.remove(audio_path)
+            except:
+                pass
+            log("🔊 Audio mezclado correctamente en el video", 'exito')
+        else:
+            # Sin audio: solo video
+            import shutil
+            shutil.copy(video_sin_audio, video_final)
+            log("⚠️ Video sin audio (TTS falló)", 'advertencia')
+
+        try:
+            os.remove(video_sin_audio)
+        except:
+            pass
+
+        if os.path.exists(video_final) and os.path.getsize(video_final) > 50_000:
+            log(f"🎬 Video listo: {os.path.getsize(video_final)//1024} KB", 'exito')
+            return video_final
+
+    except Exception as e:
+        log(f"Error generando video: {e}", 'error')
+        import traceback
+        traceback.print_exc()
+
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1244,7 +1666,7 @@ def obtener_newsapi_chile():
 
     noticias = []
     queries_chile = [
-        'Chile Boric gobierno',
+        'Chile Kast gobierno 2026',
         'Chile economía inflación dólar',
         'Chile crimen delincuencia seguridad',
         'Chile terremoto tsunami emergencia',
@@ -1257,6 +1679,8 @@ def obtener_newsapi_chile():
         'Chile educación universidades',
         'Araucanía conflicto mapuche',
         'Chile medioambiente incendio',
+        'Chile Johannes Kaiser economía',
+        'Chile partido republicano gobierno',
     ]
 
     for query in queries_chile:
@@ -1311,6 +1735,72 @@ def obtener_newsapi_chile():
             log(f"Error NewsAPI query '{query}': {e}", 'error')
 
     log(f"NewsAPI Chile: {len(noticias)} noticias", 'info')
+    return noticias
+
+
+def obtener_newsdata_chile():
+    """Obtiene noticias de NewsData.io filtradas a Chile (API previamente sin implementar)"""
+    if not NEWSDATA_API_KEY:
+        return []
+
+    noticias = []
+    queries = ['Chile noticias hoy', 'Chile gobierno Kast', 'Chile economía seguridad']
+
+    for query in queries:
+        try:
+            r = requests.get(
+                'https://newsdata.io/api/1/news',
+                params={
+                    'apikey':   NEWSDATA_API_KEY,
+                    'q':        query,
+                    'language': 'es',
+                    'country':  'cl',
+                    'size':     5,
+                },
+                timeout=10
+            )
+            if r.status_code != 200:
+                log(f"NewsData HTTP {r.status_code}", 'advertencia')
+                continue
+            data = r.json()
+            if data.get('status') != 'success':
+                continue
+
+            for art in data.get('results', []):
+                titulo = limpiar_texto(art.get('title', ''))
+                if not titulo or es_titulo_generico(titulo):
+                    continue
+                # NewsData entrega content (texto más completo que description)
+                desc = limpiar_texto(art.get('content', '') or art.get('description', ''))
+                imagen = art.get('image_url')
+
+                es_chile, nivel = es_noticia_chile(titulo, desc)
+                if not es_chile:
+                    nivel = 'directo'   # ya filtrado por country=cl
+
+                categoria    = detectar_categoria(titulo, desc)
+                tiene_imagen = bool(imagen)
+
+                noticias.append({
+                    'titulo':       titulo,
+                    'descripcion':  desc,
+                    'url':          art.get('link', ''),
+                    'imagen':       imagen,
+                    'tiene_imagen': tiene_imagen,
+                    'fuente':       f"NewsData:{art.get('source_id', '')}",
+                    'fecha':        art.get('pubDate', ''),
+                    'categoria':    categoria,
+                    'nivel_chile':  nivel,
+                    'puntaje':      calcular_puntaje_viral(
+                                        titulo, desc,
+                                        tiene_imagen=tiene_imagen,
+                                        nivel_chile=nivel
+                                    ),
+                })
+        except Exception as e:
+            log(f"Error NewsData query '{query}': {e}", 'error')
+
+    log(f"NewsData Chile: {len(noticias)} noticias", 'info')
     return noticias
 
 
@@ -1475,29 +1965,155 @@ def publicar_facebook(titulo, descripcion, imagen_path, hashtags, cta, fuente=''
     if len(mensaje) > 2200:
         mensaje = mensaje[:2100] + '…'
 
+    fb_url = f"https://graph.facebook.com/{FB_API_VERSION}/{FB_PAGE_ID}/photos"
+    for intento in range(1, FB_MAX_REINTENTOS + 1):
+        try:
+            with open(imagen_path, 'rb') as img_f:
+                r = requests.post(
+                    fb_url,
+                    files={'file': ('imagen.jpg', img_f, 'image/jpeg')},
+                    data={
+                        'message':      mensaje,
+                        'access_token': FB_ACCESS_TOKEN,
+                        'published':    'true',
+                    },
+                    timeout=60
+                )
+            resultado = r.json()
+            if 'id' in resultado:
+                log(f"Publicado OK — ID: {resultado['id']}", 'exito')
+                return True
+            else:
+                error = resultado.get('error', {})
+                log(f"Error FB (intento {intento}): {error.get('message','?')} (código {error.get('code','?')})", 'error')
+                if intento < FB_MAX_REINTENTOS:
+                    time_module.sleep(5 * intento)
+        except Exception as e:
+            log(f"Excepción FB (intento {intento}): {e}", 'error')
+            if intento < FB_MAX_REINTENTOS:
+                time_module.sleep(5 * intento)
+    return False
+
+
+def publicar_facebook_video(titulo, descripcion, video_path, hashtags, cta, fuente='', url=''):
+    """Publica un video nativo en Facebook vía /videos endpoint"""
+    if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
+        log("Faltan credenciales Facebook", 'error')
+        return False
+    if not video_path or not os.path.exists(video_path):
+        log("Sin video para publicar", 'error')
+        return False
+
+    linea_fuente = formatear_fuente_verificacion(fuente, url)
+    MAX_DESC = 1800
+    desc_post = descripcion if len(descripcion) <= MAX_DESC else descripcion[:MAX_DESC].rstrip() + '…'
+
+    mensaje = (
+        f"🔴 {titulo}\n\n"
+        f"{desc_post}\n\n"
+        f"{'─' * 30}\n"
+        f"{linea_fuente}\n"
+        f"{'─' * 30}\n"
+        f"{cta}\n\n"
+        f"{hashtags}\n\n"
+        f"📰 Verdad Hoy — Noticias Chile 🇨🇱"
+    )
+
+    if len(mensaje) > 60000:
+        mensaje = mensaje[:59900] + '…'
+
+    fb_url = f"https://graph.facebook.com/{FB_API_VERSION}/{FB_PAGE_ID}/videos"
+
+    for intento in range(1, FB_MAX_REINTENTOS + 1):
+        try:
+            with open(video_path, 'rb') as vf:
+                r = requests.post(
+                    fb_url,
+                    files={'source': ('video.mp4', vf, 'video/mp4')},
+                    data={
+                        'description':  mensaje,
+                        'access_token': FB_ACCESS_TOKEN,
+                        'published':    'true',
+                    },
+                    timeout=180
+                )
+            resultado = r.json()
+            if 'id' in resultado:
+                log(f"📹 Video publicado OK — ID: {resultado['id']}", 'exito')
+                return True
+            else:
+                error = resultado.get('error', {})
+                log(f"Error FB video (intento {intento}): {error.get('message','?')}", 'error')
+                if intento < FB_MAX_REINTENTOS:
+                    time_module.sleep(5 * intento)
+        except Exception as e:
+            log(f"Excepción FB video (intento {intento}): {e}", 'error')
+            if intento < FB_MAX_REINTENTOS:
+                time_module.sleep(5 * intento)
+
+    return False
+
+
+def publicar_wordpress(titulo, descripcion, imagen_path, categoria, url_fuente=''):
+    """Publica el artículo en WordPress vía REST API. Retorna True si OK."""
+    if not WP_URL or not WP_USER or not WP_APP_PASSWORD:
+        return False   # no configurado, silencio total
+
     try:
-        url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
-        with open(imagen_path, 'rb') as f:
-            r = requests.post(
-                url,
-                files={'file': ('imagen.jpg', f, 'image/jpeg')},
-                data={
-                    'message':      mensaje,
-                    'access_token': FB_ACCESS_TOKEN,
-                    'published':    'true',
-                },
-                timeout=60
-            )
-        resultado = r.json()
-        if 'id' in resultado:
-            log(f"Publicado OK — ID: {resultado['id']}", 'exito')
+        import base64
+        creds   = base64.b64encode(f"{WP_USER}:{WP_APP_PASSWORD}".encode()).decode()
+        headers = {
+            'Authorization': f'Basic {creds}',
+            'Content-Type':  'application/json',
+        }
+        wp_api = WP_URL.rstrip('/') + '/wp-json/wp/v2'
+
+        # Subir imagen destacada si existe
+        media_id = None
+        if imagen_path and os.path.exists(imagen_path):
+            try:
+                with open(imagen_path, 'rb') as img_f:
+                    img_data = img_f.read()
+                media_r = requests.post(
+                    f'{wp_api}/media',
+                    headers={
+                        'Authorization': f'Basic {creds}',
+                        'Content-Disposition': f'attachment; filename="noticia.jpg"',
+                        'Content-Type': 'image/jpeg',
+                    },
+                    data=img_data,
+                    timeout=30
+                )
+                media_id = media_r.json().get('id')
+            except Exception as e:
+                log(f"WP media upload: {e}", 'advertencia')
+
+        # Contenido del post
+        contenido_html = f"<p>{descripcion}</p>"
+        if url_fuente:
+            contenido_html += f'<p><a href="{url_fuente}" target="_blank" rel="nofollow">Ver noticia original</a></p>'
+
+        post_data = {
+            'title':   titulo,
+            'content': contenido_html,
+            'status':  'publish',
+            'categories': [],
+        }
+        if media_id:
+            post_data['featured_media'] = media_id
+
+        r = requests.post(f'{wp_api}/posts', headers=headers,
+                          json=post_data, timeout=30)
+        if r.status_code in (200, 201):
+            wp_link = r.json().get('link', '')
+            log(f"✅ WordPress publicado: {wp_link}", 'exito')
             return True
         else:
-            error = resultado.get('error', {})
-            log(f"Error FB: {error.get('message','?')} (código {error.get('code','?')})", 'error')
+            log(f"WP error {r.status_code}: {r.text[:200]}", 'error')
             return False
+
     except Exception as e:
-        log(f"Excepción FB: {e}", 'error')
+        log(f"Error WordPress: {e}", 'error')
         return False
 
 
@@ -1533,25 +2149,36 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "=" * 65)
-    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V6.0")
+    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V7.0")
     print("  Noticias nacionales + internacionales relacionadas con Chile")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if FORZAR_PUBLICACION:
+        print("  ⚡ MODO FORZADO ACTIVO")
     print("=" * 65)
 
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
         log("Faltan credenciales Facebook (FB_PAGE_ID / FB_ACCESS_TOKEN)", 'error')
-        return False   # error real → exit 2
+        return False
 
-    if not verificar_tiempo():
-        return None    # tiempo de espera → exit 1 (normal)
+    # ── Verificaciones previas ────────────────────────────────
+    if not FORZAR_PUBLICACION:
+        if not verificar_tiempo():
+            return None    # muy pronto → salida normal
+
+        if not esta_en_horario_pico():
+            log("Fuera de horario pico — esperando próxima ventana", 'info')
+            return None
 
     historial = cargar_historial()
     log(f"Historial: {len(historial.get('urls', []))} URLs publicadas", 'info')
 
+    if limite_diario_alcanzado(historial):
+        log(f"Límite diario alcanzado ({MAX_POSTS_POR_DIA} posts) — hasta mañana", 'info')
+        return None
+
     # ── Recolectar noticias ───────────────────────────────────
     noticias = []
 
-    # 1. RSS Chile (fuente principal)
     log("Obteniendo RSS Chile nacional...", 'info')
     rss_nac = obtener_rss_chile(FEEDS_CHILE_NACIONAL, max_noticias=50)
     noticias.extend(rss_nac)
@@ -1567,27 +2194,27 @@ def main():
     noticias.extend(rss_int)
     log(f"RSS internacional: {len(rss_int)}", 'info')
 
-    # 2. APIs (complemento)
     if NEWS_API_KEY:
         noticias.extend(obtener_newsapi_chile())
+    if NEWSDATA_API_KEY:
+        noticias.extend(obtener_newsdata_chile())
     if GNEWS_API_KEY:
         noticias.extend(obtener_gnews_chile())
 
     if not noticias:
         log("No se encontraron noticias", 'advertencia')
-        return None    # sin noticias → exit 1 (normal)
+        return None
 
     log(f"Total noticias recolectadas: {len(noticias)}", 'info')
 
     # ── Filtrar duplicadas ────────────────────────────────────
     noticias_unicas = []
     urls_vistas     = set()
-
     for n in noticias:
         url_norm = normalizar_url(n.get('url', ''))
         if url_norm in urls_vistas:
             continue
-        duplicada, razon = noticia_ya_publicada(historial, n['url'], n['titulo'])
+        duplicada, _ = noticia_ya_publicada(historial, n['url'], n['titulo'])
         if duplicada:
             continue
         urls_vistas.add(url_norm)
@@ -1597,28 +2224,24 @@ def main():
 
     if not noticias_unicas:
         log("Todas las noticias ya fueron publicadas", 'advertencia')
-        return None    # normal → exit 1
-
-    # ── Separar por imagen / sin imagen ──────────────────────
-    con_imagen    = [n for n in noticias_unicas if n.get('tiene_imagen')]
-    sin_imagen    = [n for n in noticias_unicas if not n.get('tiene_imagen')]
-
-    log(f"Con imagen: {len(con_imagen)} | Sin imagen: {len(sin_imagen)}", 'info')
-
-    # Ordenar ambas listas por puntaje
-    con_imagen.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
-    sin_imagen.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
-
-    # Priorizar siempre noticias con imagen
-    candidatas = con_imagen + sin_imagen
+        return None
 
     # ── Seleccionar la mejor noticia ─────────────────────────
+    con_imagen = sorted(
+        [n for n in noticias_unicas if n.get('tiene_imagen')],
+        key=lambda x: x.get('puntaje', 0), reverse=True
+    )
+    sin_imagen = sorted(
+        [n for n in noticias_unicas if not n.get('tiene_imagen')],
+        key=lambda x: x.get('puntaje', 0), reverse=True
+    )
+    candidatas   = con_imagen + sin_imagen
     seleccionada = candidatas[0]
     categoria    = seleccionada.get('categoria', 'default')
     nivel_chile  = seleccionada.get('nivel_chile', 'directo')
 
     log(f"Seleccionada: {seleccionada['titulo'][:70]}", 'info')
-    log(f"Categoría: {categoria} | Nivel Chile: {nivel_chile} | "
+    log(f"Categoría: {categoria} | Nivel: {nivel_chile} | "
         f"Puntaje: {seleccionada.get('puntaje',0)} | "
         f"Imagen: {'SÍ' if seleccionada.get('tiene_imagen') else 'NO'}", 'info')
 
@@ -1626,39 +2249,71 @@ def main():
     imagen_path, tipo_imagen = procesar_imagen(seleccionada)
     if not imagen_path:
         log("No se pudo crear imagen, abortando", 'error')
-        return False   # error real → exit 2
+        return False
     log(f"Tipo imagen: {tipo_imagen}", 'imagen')
 
-    # ── Obtener texto completo (scraping + fallback RSS) ──────
+    # ── Texto completo ────────────────────────────────────────
     log("Obteniendo texto completo del artículo...", 'info')
-    descripcion_completa = obtener_descripcion_completa(seleccionada, max_chars=1400)
+    descripcion_completa = obtener_descripcion_completa(seleccionada, max_chars=4000)
     log(f"Texto final: {len(descripcion_completa)} chars", 'info')
 
-    # ── Preparar contenido ────────────────────────────────────
-    hashtags = generar_hashtags(
-        seleccionada['titulo'],
-        seleccionada.get('descripcion', ''),
-        categoria
-    )
-    cta = obtener_cta(categoria, seleccionada['titulo'])
+    # ── CTAs y hashtags ───────────────────────────────────────
+    hashtags  = generar_hashtags(seleccionada['titulo'],
+                                  seleccionada.get('descripcion', ''), categoria)
+    cta_post  = obtener_cta(categoria, seleccionada['titulo'])
+    cta_video = obtener_cta_video(categoria, seleccionada['titulo'])
 
     log(f"Hashtags: {hashtags}", 'info')
-    log(f"CTA: {cta}", 'info')
+    log(f"CTA post: {cta_post}", 'info')
+    log(f"CTA video: {cta_video}", 'info')
 
-    # ── Publicar ──────────────────────────────────────────────
-    exito = publicar_facebook(
-        titulo      = seleccionada['titulo'],
-        descripcion = descripcion_completa,
-        imagen_path = imagen_path,
-        hashtags    = hashtags,
-        cta         = cta,
-        fuente      = seleccionada.get('fuente', ''),
-        url         = seleccionada.get('url', ''),
-    )
+    # ── Intentar publicar como VIDEO ──────────────────────────
+    exito = False
+    video_path = crear_video_noticia(imagen_path, seleccionada['titulo'],
+                                      descripcion_completa[:400], categoria, cta_video)
+    if video_path:
+        log("🎬 Intentando publicar como video...", 'info')
+        exito = publicar_facebook_video(
+            titulo      = seleccionada['titulo'],
+            descripcion = descripcion_completa,
+            video_path  = video_path,
+            hashtags    = hashtags,
+            cta         = cta_post,
+            fuente      = seleccionada.get('fuente', ''),
+            url         = seleccionada.get('url', ''),
+        )
+        try:
+            os.remove(video_path)
+        except:
+            pass
 
-    # Limpiar imagen temporal
+    # ── Fallback: publicar como imagen si el video falló ─────
+    if not exito:
+        log("Fallback: publicando como imagen...", 'info')
+        exito = publicar_facebook(
+            titulo      = seleccionada['titulo'],
+            descripcion = descripcion_completa,
+            imagen_path = imagen_path,
+            hashtags    = hashtags,
+            cta         = cta_post,
+            fuente      = seleccionada.get('fuente', ''),
+            url         = seleccionada.get('url', ''),
+        )
+
+    # ── WordPress (opcional) ──────────────────────────────────
+    if exito and WP_URL:
+        log("Publicando en WordPress...", 'info')
+        publicar_wordpress(
+            titulo      = seleccionada['titulo'],
+            descripcion = descripcion_completa,
+            imagen_path = imagen_path,
+            categoria   = categoria,
+            url_fuente  = seleccionada.get('url', ''),
+        )
+
+    # Limpiar imagen
     try:
-        if os.path.exists(imagen_path):
+        if imagen_path and os.path.exists(imagen_path):
             os.remove(imagen_path)
     except:
         pass
@@ -1672,29 +2327,28 @@ def main():
             'nivel_chile':        nivel_chile,
             'tenia_imagen':       seleccionada.get('tiene_imagen', False),
         })
-        total = historial.get('estadisticas', {}).get('total_publicadas', 0)
-        log(f"ÉXITO — Total publicadas: {total}", 'exito')
+        total = historial.get('estadisticas', {}).get('total_publicadas', 0) + 1
+        log(f"✅ ÉXITO — Total publicadas: {total}", 'exito')
         return True
     else:
-        log("PUBLICACIÓN FALLIDA", 'error')
-        return False   # error real → exit 2
+        log("❌ PUBLICACIÓN FALLIDA", 'error')
+        return False
 
 
 if __name__ == "__main__":
     # Códigos de salida:
-    #   0 = publicación exitosa
-    #   1 = sin noticias nuevas / tiempo de espera (normal, no es error)
-    #   2 = error real (credenciales, imagen, Facebook API, excepción)
+    #   0 = publicación exitosa O salida normal (tiempo, horario, límite)
+    #   1 = error real (credenciales, Facebook API, excepción)
     try:
         resultado = main()
         if resultado is True:
-            exit(0)   # publicó OK
+            exit(0)    # publicó OK
         elif resultado is None:
-            exit(1)   # sin noticias / tiempo de espera
+            exit(0)    # salida normal (tiempo, horario pico, límite diario)
         else:
-            exit(2)   # error real
+            exit(1)    # error real
     except Exception as e:
         log(f"Error crítico: {e}", 'error')
         import traceback
         traceback.print_exc()
-        exit(2)
+        exit(1)
