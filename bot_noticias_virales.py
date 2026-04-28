@@ -1085,39 +1085,76 @@ def _limpiar_para_voz(texto):
 
     return texto
 
-def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=300):
+def _extraer_primer_parrafo(texto, max_chars=350):
     """
-    Genera audio MP3 con la voz leyendo:
-    'Última hora. [TÍTULO]. [RESUMEN]. [CTA]. Comenta, reacciona y comparte.
-    Más detalles en la descripción de esta publicación.'
-    Retorna ruta del MP3 o None si falla.
+    Extrae el primer párrafo real del texto del artículo.
+    Un párrafo real tiene al menos 60 caracteres para evitar subtítulos sueltos.
     """
-    titulo_voz = _limpiar_para_voz(titulo)
-    desc_corta = _limpiar_para_voz(descripcion[:max_desc_chars])
-    if desc_corta and not desc_corta.endswith('.'):
-        desc_corta = desc_corta.rstrip('…').strip() + '.'
-    cta_voz = _limpiar_para_voz(cta_video.split('👇')[0].strip())
+    if not texto:
+        return ''
+    # Separar por saltos de línea dobles o simples
+    parrafos = [p.strip() for p in re.split(r'\n+', texto) if p.strip()]
+    for p in parrafos:
+        if len(p) >= 60:
+            # Cortar en el primer punto si supera max_chars
+            if len(p) > max_chars:
+                # Buscar el último punto antes del límite
+                corte = p.rfind('.', 0, max_chars)
+                if corte > 60:
+                    return p[:corte + 1]
+                return p[:max_chars].rstrip() + '.'
+            return p if p.endswith('.') else p + '.'
+    # Si no hay párrafos largos, usar el texto directo
+    if len(texto) > max_chars:
+        corte = texto.rfind('.', 0, max_chars)
+        return texto[:corte + 1] if corte > 30 else texto[:max_chars].rstrip() + '.'
+    return texto
 
+
+def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=350):
+    """
+    Guión de voz estructurado como presentador/a de noticias:
+    1. [TITULAR]
+    2. [PRIMER PÁRRAFO del artículo]
+    3. "Lee más detalles en la descripción."
+    4. [CTA temático]
+    5. "Comenta, comparte y reacciona."
+    """
+    titulo_voz    = _limpiar_para_voz(titulo)
+    primer_parr   = _limpiar_para_voz(_extraer_primer_parrafo(descripcion, max_chars=max_desc_chars))
+    cta_voz       = _limpiar_para_voz(re.sub(r'[👇👍🔁💬🚨🔴]', '', cta_video).strip())
+    if cta_voz and not cta_voz.endswith('?'):
+        cta_voz = cta_voz.rstrip('.').strip()
+
+    # Guión estructurado — pausas naturales con comas y puntos
     guion = (
-        f"Última hora. {titulo_voz}. "
-        f"{desc_corta} "
+        f"{titulo_voz}. "
+        f"{primer_parr} "
+        f"Lee más detalles en la descripción de esta publicación. "
         f"{cta_voz}. "
-        "Comenta, reacciona y comparte. "
-        "Más detalles en la descripción de esta publicación."
+        f"Comenta, comparte y reacciona."
     )
 
-    voz    = random.choice(VOCES_TTS)
+    voz     = random.choice(VOCES_TTS)
     out_mp3 = f'/tmp/audio_{hashlib.md5(titulo.encode()).hexdigest()[:8]}.mp3'
 
-    # ── Intentar edge-tts ────────────────────────────────────
+    log(f"🎙️ Voz seleccionada: {voz}", 'info')
+
+    # ── edge-tts: tono más cálido con pitch y rate ajustados ─
     try:
         import edge_tts
         async def _generar():
-            comm = edge_tts.Communicate(guion, voz, rate='+8%')
+            # rate='-4%' → ligeramente más lento que normal, como presentador de noticias
+            # volume='+8%' → un poco más de presencia
+            comm = edge_tts.Communicate(
+                guion, voz,
+                rate='-4%',      # más pausado = más natural y cálido
+                volume='+8%',    # más presencia de voz
+            )
             await comm.save(out_mp3)
         asyncio.run(_generar())
         if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 5000:
-            log(f"🔊 Audio TTS generado con {voz} ({os.path.getsize(out_mp3)//1024} KB)", 'exito')
+            log(f"🔊 Audio TTS OK ({os.path.getsize(out_mp3)//1024} KB)", 'exito')
             return out_mp3
     except Exception as e:
         log(f"edge-tts falló ({e}), intentando espeak...", 'advertencia')
@@ -1126,10 +1163,9 @@ def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=300):
     try:
         wav_path = out_mp3.replace('.mp3', '.wav')
         subprocess.run(
-            ['espeak', '-v', 'es-la', '-s', '145', '-w', wav_path, guion],
+            ['espeak', '-v', 'es-la', '-s', '135', '-p', '45', '-w', wav_path, guion],
             check=True, capture_output=True, timeout=30
         )
-        # convertir WAV → MP3 con ffmpeg
         subprocess.run(
             ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-q:a', '4', out_mp3],
             check=True, capture_output=True, timeout=30
@@ -1139,7 +1175,7 @@ def crear_audio_noticia(titulo, descripcion, cta_video, max_desc_chars=300):
         except:
             pass
         if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 1000:
-            log(f"🔊 Audio espeak generado ({os.path.getsize(out_mp3)//1024} KB)", 'info')
+            log(f"🔊 Audio espeak OK ({os.path.getsize(out_mp3)//1024} KB)", 'info')
             return out_mp3
     except Exception as e:
         log(f"espeak también falló: {e}", 'error')
