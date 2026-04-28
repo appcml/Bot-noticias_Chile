@@ -1,13 +1,13 @@
-name: Verdad Hoy — Bot Noticias Chile 30min
+name: Bot Noticias Chile
 
 on:
   schedule:
-    # Cada 30 minutos las 24 horas
-    - cron: '0,30 * * * *'
+    # Corre cada 30 minutos — el bot verifica horario pico y límite diario
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
-      forzar_publicacion:
-        description: 'Forzar publicación ignorando tiempo de espera'
+      forzar:
+        description: 'Forzar publicación (salta tiempo y horario pico)'
         required: false
         default: 'false'
         type: choice
@@ -15,111 +15,70 @@ on:
           - 'false'
           - 'true'
 
-# Evita ejecuciones simultáneas que corrompan el historial
-concurrency:
-  group: bot-noticias-chile
-  cancel-in-progress: false
-
-env:
-  PYTHON_VERSION: '3.11'
-  # Credenciales Facebook
-  FB_PAGE_ID:        ${{ secrets.FB_PAGE_ID }}
-  FB_ACCESS_TOKEN:   ${{ secrets.FB_ACCESS_TOKEN }}
-  # APIs de noticias (opcionales — el bot funciona solo con RSS si no están)
-  NEWS_API_KEY:      ${{ secrets.NEWS_API_KEY }}
-  NEWSDATA_API_KEY:  ${{ secrets.NEWSDATA_API_KEY }}
-  GNEWS_API_KEY:     ${{ secrets.GNEWS_API_KEY }}
-  # Rutas de datos — actualizadas al nuevo nombre
-  HISTORIAL_PATH:    data/historial_viral.json
-  ESTADO_PATH:       data/estado_bot_viral.json
-
 jobs:
-  bot-chile:
-    name: Publicar noticia Chile
+  publicar:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    permissions:
+      contents: write
 
     steps:
-      # ── 1. Código fuente ───────────────────────────────────
-      - name: Checkout código
+      - name: Checkout repositorio
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
-      # ── 2. Python ──────────────────────────────────────────
-      - name: Setup Python ${{ env.PYTHON_VERSION }}
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          python-version: '3.11'
 
-      # ── 3. Dependencias ────────────────────────────────────
-      - name: Instalar dependencias
+      - name: Instalar dependencias del sistema (ffmpeg + espeak)
         run: |
-          pip install --upgrade pip
-          pip install requests feedparser beautifulsoup4 Pillow lxml
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg espeak espeak-data
 
-      # ── 4. Directorios ─────────────────────────────────────
-      - name: Preparar directorios
-        run: mkdir -p data logs
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
 
-      # ── 5. Restaurar historial cacheado ────────────────────
-      # Usa restore-keys en cascada para siempre tener un historial base
-      - name: Restaurar historial
-        uses: actions/cache/restore@v4
-        with:
-          path: data/
-          key: historial-chile-${{ github.run_id }}
-          restore-keys: |
-            historial-chile-
-
-      # ── 6. Ejecutar bot ────────────────────────────────────
       - name: Ejecutar bot
-        id: bot
+        env:
+          NEWS_API_KEY:       ${{ secrets.NEWS_API_KEY }}
+          NEWSDATA_API_KEY:   ${{ secrets.NEWSDATA_API_KEY }}
+          GNEWS_API_KEY:      ${{ secrets.GNEWS_API_KEY }}
+          FB_PAGE_ID:         ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN:    ${{ secrets.FB_ACCESS_TOKEN }}
+          # WordPress (opcional — dejar vacío si no está configurado)
+          WP_URL:             ${{ secrets.WP_URL }}
+          WP_USER:            ${{ secrets.WP_USER }}
+          WP_APP_PASSWORD:    ${{ secrets.WP_APP_PASSWORD }}
+          # Historial en raíz del repo
+          HISTORIAL_PATH:     data/historial_chile.json
+          ESTADO_PATH:        data/estado_bot_chile.json
+          # Modo forzado: 'true' solo cuando se activa manualmente con esa opción
+          FORZAR_PUBLICACION: ${{ github.event.inputs.forzar || 'false' }}
+        run: python bot_noticias_virales.py
+
+      - name: Guardar historial en repositorio
+        if: always()
         run: |
-          set -o pipefail
-          python bot_noticias_virales.py 2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
-          BOT_EXIT=${PIPESTATUS[0]}
-          echo "exit_code=$BOT_EXIT" >> $GITHUB_OUTPUT
-          # exit 0 = publicó OK
-          # exit 1 = sin noticias nuevas o tiempo de espera (normal, no es error)
-          # exit 2+ = error real
-          if [ "$BOT_EXIT" -ge 2 ]; then
-            echo "status=error" >> $GITHUB_OUTPUT
-          elif [ "$BOT_EXIT" -eq 1 ]; then
-            echo "status=sin_noticias" >> $GITHUB_OUTPUT
+          git config user.name  "bot-noticias-chile[bot]"
+          git config user.email "bot-noticias-chile@users.noreply.github.com"
+          if git diff --quiet data/historial_chile.json data/estado_bot_chile.json 2>/dev/null; then
+            echo "ℹ️ Sin cambios en historial"
           else
-            echo "status=ok" >> $GITHUB_OUTPUT
+            git add data/historial_chile.json data/estado_bot_chile.json
+            git commit -m "📰 Historial Chile actualizado [skip ci]"
+            git push
+            echo "✅ Historial guardado"
           fi
 
-      # ── 7. Guardar historial siempre (éxito o fallo) ───────
-      - name: Guardar historial
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data/
-          key: historial-chile-${{ github.run_id }}-${{ github.run_attempt }}
-
-      # ── 8. Subir logs como artefacto ───────────────────────
-      - name: Subir logs
-        if: always()
+      - name: Subir estado como artefacto
         uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ github.run_id }}
-          path: logs/
-          retention-days: 7
-
-      # ── 9. Verificar resultado ─────────────────────────────
-      # Solo falla el workflow si hay un error REAL (exit >= 2)
-      # exit 1 = sin noticias nuevas es comportamiento normal
-      - name: Verificar resultado
         if: always()
-        run: |
-          STATUS="${{ steps.bot.outputs.status }}"
-          EXIT="${{ steps.bot.outputs.exit_code }}"
-          if [ "$STATUS" = "ok" ]; then
-            echo "✅ Noticia publicada correctamente."
-          elif [ "$STATUS" = "sin_noticias" ]; then
-            echo "ℹ️ Sin noticias nuevas disponibles (exit $EXIT) — comportamiento normal."
-          else
-            echo "❌ Error real en el bot (exit $EXIT). Revisar logs del artefacto."
-            exit 1
-          fi
+        with:
+          name: bot-chile-state-${{ github.run_number }}
+          path: |
+            data/historial_chile.json
+            data/estado_bot_chile.json
+          retention-days: 7
