@@ -1076,8 +1076,8 @@ def _limpiar_para_voz(texto):
     texto = re.sub(r'[🇦-🇿]{2}', '', texto)                  # banderas
     texto = re.sub(r'[#@]', '', texto)
     texto = re.sub(r'[─═▪►•·…]', ' ', texto)
-    texto = re.sub(r'[""]', '"', texto)    # comillas tipográficas → rectas
-    texto = re.sub(r'['']', "'", texto)
+    texto = texto.replace('\u201c', '"').replace('\u201d', '"')  # comillas dobles tipograficas
+    texto = texto.replace('\u2018', "'").replace('\u2019', "'")  # comillas simples tipograficas
 
     # ── 5. Limpiar espacios dobles y puntuación final ─────────
     texto = re.sub(r'\s+', ' ', texto).strip()
@@ -1300,10 +1300,12 @@ def crear_video_noticia(imagen_path, titulo, descripcion, categoria, cta_video):
         if imagen_path and os.path.exists(imagen_path):
             try:
                 img_raw  = Image.open(imagen_path).convert('RGB')
-                # escalar a mínimo 1280px de ancho manteniendo ratio
+                # escalar para que cubra bien el frame vertical 720x1280
                 w, h = img_raw.size
-                if w < 1280:
-                    img_raw = img_raw.resize((1280, int(h * 1280 / w)), Image.Resampling.LANCZOS)
+                # necesitamos al menos 720px de ancho y altura suficiente para el área de imagen
+                target_w = 720
+                if w < target_w:
+                    img_raw = img_raw.resize((target_w, int(h * target_w / w)), Image.Resampling.LANCZOS)
                 img_base = img_raw
             except Exception as e:
                 log(f"Error cargando imagen para video: {e}", 'advertencia')
